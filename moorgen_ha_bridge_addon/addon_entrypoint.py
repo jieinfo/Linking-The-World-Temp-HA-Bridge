@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+import time
 
 from bridge import Bridge
 
@@ -32,5 +34,18 @@ def load_options() -> dict:
     }
 
 
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    while True:
+        bridge = Bridge(load_options())
+        try:
+            bridge.run()
+        except (ConnectionError, OSError, TimeoutError):
+            logging.exception("MC7021 session failed; retrying in 15 seconds")
+        finally:
+            bridge.client.close()
+        time.sleep(15)
+
+
 if __name__ == "__main__":
-    Bridge(load_options()).run()
+    main()
