@@ -1,5 +1,5 @@
 name: Moorgen HA Bridge
-version: 0.1.1
+version: 0.1.2
 slug: moorgen_ha_bridge
 description: Experimental local bridge for the MC7021 technology-system controller
 url: https://github.com/jieinfo/ygsj-moorgen
@@ -12,6 +12,7 @@ arch:
 init: false
 startup: services
 boot: auto
+host_network: true
 options:
   moorgen_host: 192.168.10.246
   moorgen_port: 9000
