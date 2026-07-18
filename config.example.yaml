@@ -1,0 +1,16 @@
+# Local MC7021 account. This bridge never contacts a Moorgen cloud service.
+moorgen:
+  host: 192.168.10.246
+  port: 9000
+  username: Test
+  password: change-me
+
+# The Home Assistant MQTT integration broker.
+mqtt:
+  host: 192.168.10.2
+  port: 1883
+  username: ""
+  password: ""
+  client_id: moorgen-ha-bridge
+  topic_prefix: moorgen/tech_system
+  discovery_prefix: homeassistant
