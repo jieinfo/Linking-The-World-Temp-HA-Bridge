@@ -643,7 +643,7 @@ class Bridge:
             "current_humidity_topic": f"{topic}/humidity",
             "min_temp": 5,
             "max_temp": 40,
-            "temp_step": 0.5,
+            "temp_step": 1,
             "precision": 0.1,
             "temperature_unit": "C",
             "device": device,
