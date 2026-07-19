@@ -1,4 +1,5 @@
-# Local MC7021 account. This bridge never contacts a Moorgen cloud service.
+# Local MC7021 account for a LINGKING THE WORLD SixHeng controller.
+# This bridge never contacts a Moorgen cloud service.
 moorgen:
   host: 192.168.10.246
   port: 9000
