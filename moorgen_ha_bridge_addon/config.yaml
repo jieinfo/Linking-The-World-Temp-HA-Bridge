@@ -1,7 +1,7 @@
-name: Moorgen HA Bridge
-version: 0.1.16
+name: LINGKING SixHeng Bridge
+version: 0.1.17
 slug: moorgen_ha_bridge
-description: Experimental local bridge for the MC7021 technology-system controller
+description: Local Home Assistant bridge for LINGKING THE WORLD SixHeng systems
 url: https://github.com/jieinfo/ygsj-moorgen
 arch:
   - aarch64
