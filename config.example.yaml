@@ -6,6 +6,8 @@ moorgen:
   password: change-me
   # Client identifier observed in the working local App capture.
   client_id: ff9549d5891998e5
+  # Override only when a compatible host uses a different virtual total-control MAC.
+  tech_system_mac: ff00ffffffff00ff
 
 # The Home Assistant MQTT integration broker.
 mqtt:
@@ -16,3 +18,12 @@ mqtt:
   client_id: moorgen-ha-bridge
   topic_prefix: moorgen/tech_system
   discovery_prefix: homeassistant
+
+# Keep control enabled for existing installations. For a new household, use
+# false during its first observation period, then enable it after validation.
+safety:
+  allow_control: true
+  command_min_interval: 0.5
+  # Mark a discovered panel unavailable after this many seconds without a report.
+  # Set 0 to disable stale-device detection.
+  thermostat_offline_after: 900

@@ -1,5 +1,5 @@
 name: Moorgen HA Bridge
-version: 0.1.13
+version: 0.1.14
 slug: moorgen_ha_bridge
 description: Experimental local bridge for the MC7021 technology-system controller
 url: https://github.com/jieinfo/ygsj-moorgen
@@ -19,6 +19,7 @@ options:
   moorgen_username: Test
   moorgen_password: ""
   moorgen_client_id: ff9549d5891998e5
+  moorgen_tech_system_mac: ff00ffffffff00ff
   mqtt_host: core-mosquitto
   mqtt_port: 1883
   mqtt_username: ""
@@ -26,12 +27,16 @@ options:
   mqtt_client_id: moorgen-ha-bridge
   mqtt_topic_prefix: moorgen/tech_system
   mqtt_discovery_prefix: homeassistant
+  allow_control: true
+  command_min_interval: 0.5
+  thermostat_offline_after: 900
 schema:
   moorgen_host: str
   moorgen_port: port
   moorgen_username: str
   moorgen_password: password
   moorgen_client_id: str
+  moorgen_tech_system_mac: str
   mqtt_host: str
   mqtt_port: port
   mqtt_username: str?
@@ -39,3 +44,6 @@ schema:
   mqtt_client_id: str
   mqtt_topic_prefix: str
   mqtt_discovery_prefix: str
+  allow_control: bool
+  command_min_interval: float
+  thermostat_offline_after: int

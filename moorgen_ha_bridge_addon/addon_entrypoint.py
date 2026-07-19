@@ -22,6 +22,7 @@ def load_options() -> dict:
             "username": options["moorgen_username"],
             "password": options["moorgen_password"],
             "client_id": options["moorgen_client_id"],
+            "tech_system_mac": options.get("moorgen_tech_system_mac", "ff00ffffffff00ff"),
         },
         "mqtt": {
             "host": options["mqtt_host"],
@@ -31,6 +32,11 @@ def load_options() -> dict:
             "client_id": options["mqtt_client_id"],
             "topic_prefix": options["mqtt_topic_prefix"],
             "discovery_prefix": options["mqtt_discovery_prefix"],
+        },
+        "safety": {
+            "allow_control": options.get("allow_control", True),
+            "command_min_interval": float(options.get("command_min_interval", 0.5)),
+            "thermostat_offline_after": float(options.get("thermostat_offline_after", 900)),
         },
     }
 
