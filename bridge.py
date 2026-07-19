@@ -24,12 +24,11 @@ import paho.mqtt.client as mqtt
 import yaml
 
 LOG = logging.getLogger("moorgen_ha_bridge")
-MAGIC = b"yashcp"
+# Each YAS HCP payload is carried in the App's ``# + uint16 length`` envelope.
+# The captured wire magic is consequently ``dooyashcp``, followed by one '#'.
+MAGIC = b"dooyashcp"
 VERSION = 1
-# The capture consistently terminates YAS HCP frames with '#' plus six bytes.
-# Zero is the most common value in the App capture and is accepted by the
-# protocol decoder in the current MC7021 sample.
-TRAILER = b"\x23" + b"\x00" * 6
+TRAILER = b"#"
 TECH_SYSTEM_MAC = bytes.fromhex("ff00ffffffff00ff")
 DEFAULT_CLIENT_ID = "ff9549d5891998e5"
 
@@ -64,7 +63,8 @@ class YasHcpFrame:
     def encode(self) -> bytes:
         header = MAGIC + bytes((VERSION, self.kind, self.opcode))
         header += struct.pack("<HH", self.sequence, len(self.body))
-        return header + self.body + TRAILER
+        payload = header + self.body + TRAILER
+        return b"#" + struct.pack("<H", len(payload)) + payload
 
 
 class YasHcpDecoder:
@@ -77,26 +77,34 @@ class YasHcpDecoder:
         self._buffer.extend(data)
         output: list[YasHcpFrame] = []
         while True:
-            start = self._buffer.find(MAGIC)
+            start = self._buffer.find(b"#")
             if start < 0:
-                self._buffer[:] = self._buffer[-(len(MAGIC) - 1) :]
+                self._buffer.clear()
                 return output
             if start:
                 del self._buffer[:start]
-            if len(self._buffer) < 13:
+            if len(self._buffer) < 3:
                 return output
-            body_length = struct.unpack_from("<H", self._buffer, 11)[0]
-            frame_length = 13 + body_length + len(TRAILER)
+            payload_length = struct.unpack_from("<H", self._buffer, 1)[0]
+            frame_length = 3 + payload_length
             if len(self._buffer) < frame_length:
                 return output
-            raw = bytes(self._buffer[:frame_length])
+            raw = bytes(self._buffer[3:frame_length])
             del self._buffer[:frame_length]
+            if not raw.startswith(MAGIC) or not raw.endswith(TRAILER) or len(raw) < len(MAGIC) + 8:
+                LOG.warning("discarded malformed YAS HCP payload: %s", raw.hex())
+                continue
+            body_length = struct.unpack_from("<H", raw, len(MAGIC) + 5)[0]
+            expected_length = len(MAGIC) + 7 + body_length + len(TRAILER)
+            if len(raw) != expected_length:
+                LOG.warning("discarded YAS HCP payload with invalid length: %s", raw.hex())
+                continue
             output.append(
                 YasHcpFrame(
-                    kind=raw[7],
-                    opcode=raw[8],
-                    sequence=struct.unpack_from("<H", raw, 9)[0],
-                    body=raw[13 : 13 + body_length],
+                    kind=raw[len(MAGIC) + 1],
+                    opcode=raw[len(MAGIC) + 2],
+                    sequence=struct.unpack_from("<H", raw, len(MAGIC) + 3)[0],
+                    body=raw[len(MAGIC) + 7 : len(MAGIC) + 7 + body_length],
                 )
             )
 
