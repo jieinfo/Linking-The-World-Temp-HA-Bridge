@@ -4,6 +4,8 @@ moorgen:
   port: 9000
   username: Test
   password: change-me
+  # Client identifier observed in the working local App capture.
+  client_id: ff9549d5891998e5
 
 # The Home Assistant MQTT integration broker.
 mqtt:
