@@ -4,15 +4,17 @@ This bridge controls the MC7021 `三恒总控` virtual device through the same l
 `yashcp` TCP/9000 protocol used by the Android Moorgen App. It does not contact
 Moorgen cloud services and does not emulate an MT8157 device.
 
-The supplied PCAPs prove these operations:
+The supplied PCAPs prove these operations on one MC7021 installation:
 
 - System power on and off
 - Cooling, heat, ventilation, and dehumidify modes
 - Home and away scenes
 - Winter humidifier on and off
+- Child thermostat enable/disable, target temperature, current temperature, and humidity
 
-Individual temperature and fan controls are intentionally not exposed yet
-because the supplied captures do not contain their write commands.
+Child panels are discovered from their live status reports; their count is not
+fixed. The central technology-system mode owns cooling/heating/dehumidification/
+ventilation, while each child Climate card only enables or disables that room.
 
 ## Install and start
 
@@ -29,8 +31,9 @@ python3 bridge.py --config config.yaml --debug
 ```
 
 Set `moorgen.password` to the local MC7021 account password and fill in MQTT
-details. Home Assistant's MQTT integration will automatically discover four
-entities under `摩根科技系统总控`.
+details. Use a unique `mqtt.client_id` and `mqtt.topic_prefix` for every home
+that shares a broker. Home Assistant's MQTT integration discovers the total
+control and every reporting child panel automatically.
 
 ## First test
 
@@ -39,10 +42,9 @@ entities under `摩根科技系统总控`.
 3. In Home Assistant, turn on `科技系统总开关`.
 4. Verify the App and physical system both reflect the command.
 
-The bridge publishes the raw MC7021 state report at
-`moorgen/tech_system/status_raw`. It publishes the requested entity state
-immediately after a command; decoding every byte of the host's 14-byte
-technology-system status block is a separate follow-up task.
+The bridge publishes raw MC7021 state reports at
+`moorgen/tech_system/status_raw`, so an unsupported installation can be
+diagnosed without guessing protocol fields.
 
 ## Device interlocks
 
@@ -57,7 +59,13 @@ technology-system status block is a separate follow-up task.
 
 ## Safety notes
 
-- Keep the original mobile App connected during the first test; this bridge is
-  a second App-like controller and does not create a virtual panel module.
-- Test one control at a time and leave several seconds between commands.
+- For a new household, begin with `safety.allow_control: false`, observe status
+  for 24 hours, then explicitly enable control.
+- Commands are serialized and rate-limited. The host remains the authority:
+  verify its next status report before relying on a change in automations.
+- Child panels become unavailable after 900 seconds without a report by default;
+  set `safety.thermostat_offline_after: 0` only when a compatible installation
+  reports less frequently.
+- The bridge is tested against MC7021 local protocol samples only. Do not assume
+  compatibility with MT7022, other controller families, or unknown firmware.
 - Do not expose TCP/9000 or MQTT to the public internet.
