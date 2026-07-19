@@ -229,7 +229,7 @@ def decode_thermostat_status(body: bytes, tech_system_mac: bytes = TECH_SYSTEM_M
     return ThermostatState(
         mac=mac,
         room_id=room_id,
-        target_temperature=packed[0] / 2,
+        target_temperature=packed[0] // 2,
         # Bytes 1-2 are the little-endian room temperature in tenths of a
         # degree. The App may round it for display, but HA keeps the decimal.
         current_temperature=int.from_bytes(packed[1:3], "little") / 10,
@@ -523,11 +523,11 @@ class Bridge:
             raise RuntimeError(f"unknown thermostat: {mac_hex}")
         if setting == "temperature":
             temperature = float(value)
-            raw_value = round(temperature * 2)
-            if not 10 <= raw_value <= 80:
+            if not temperature.is_integer() or not 5 <= temperature <= 40:
                 raise RuntimeError("temperature must be between 5 and 40 degrees")
+            raw_value = int(temperature) * 2
             self._send_command_to(thermostat.mac, COMMAND_MODE, raw_value)
-            thermostat.target_temperature = raw_value / 2
+            thermostat.target_temperature = int(temperature)
         elif setting in ("power", "mode"):
             if setting == "mode" and value not in ("off", self._thermostat_active_hvac_mode()):
                 raise RuntimeError(f"unsupported thermostat HVAC mode: {value}")
