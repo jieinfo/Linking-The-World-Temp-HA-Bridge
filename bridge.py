@@ -194,7 +194,6 @@ def decode_thermostat_status(body: bytes) -> ThermostatState | None:
         or fields.get(0x0075) != TECH_SYSTEM_MAC
         or len(packed or b"") != 5
         or not power
-        or len(fields.get(0x0031, b"")) != 2
     ):
         return None
     room_id = fields.get(0x0030, b"").decode("utf-8", errors="replace")
@@ -202,11 +201,11 @@ def decode_thermostat_status(body: bytes) -> ThermostatState | None:
         mac=mac,
         room_id=room_id,
         target_temperature=packed[0] / 2,
-        # The App renders tag 0x31 as the room's actual temperature/humidity.
-        # The remaining bytes in tag 0x0A are thermostat-internal values.
-        current_temperature=fields[0x0031][0],
+        # Bytes 1-2 are the little-endian room temperature in tenths of a
+        # degree. The App may round it for display, but HA keeps the decimal.
+        current_temperature=int.from_bytes(packed[1:3], "little") / 10,
         power="ON" if power[0] else "OFF",
-        humidity=fields[0x0031][1],
+        humidity=packed[3],
     )
 
 
@@ -506,7 +505,7 @@ class Bridge:
 
     def _thermostat_name(self, thermostat: ThermostatState) -> str:
         room_name = self.room_names.get(thermostat.room_id, thermostat.room_id or thermostat.mac.hex())
-        return f"{room_name} 温控面板"
+        return f"{room_name} æ¸©æ§é¢æ¿"
 
     def _thermostat_topic(self, thermostat: ThermostatState) -> str:
         return f"{self.topic_prefix}/thermostat/{thermostat.mac.hex()}"
@@ -530,7 +529,7 @@ class Bridge:
             retain=True,
         )
         self._discovery("switch", f"thermostat_{mac_hex}_power", {
-            "name": "开启",
+            "name": "å¼å¯",
             "unique_id": f"moorgen_thermostat_{mac_hex}_power",
             "command_topic": f"{topic}/power/set",
             "state_topic": f"{topic}/power/state",
@@ -539,28 +538,28 @@ class Bridge:
             "device": device,
         })
         self._discovery("number", f"thermostat_{mac_hex}_target_temperature", {
-            "name": "设定温度",
+            "name": "è®¾å®æ¸©åº¦",
             "unique_id": f"moorgen_thermostat_{mac_hex}_target_temperature",
             "command_topic": f"{topic}/temperature/set",
             "state_topic": f"{topic}/temperature/state",
             "min": 5,
             "max": 40,
             "step": 0.5,
-            "unit_of_measurement": "°C",
+            "unit_of_measurement": "Â°C",
             "mode": "box",
             "device": device,
         })
         self._discovery("sensor", f"thermostat_{mac_hex}_temperature", {
-            "name": "当前温度",
+            "name": "å½åæ¸©åº¦",
             "unique_id": f"moorgen_thermostat_{mac_hex}_temperature",
             "state_topic": f"{topic}/current_temperature",
-            "unit_of_measurement": "°C",
+            "unit_of_measurement": "Â°C",
             "device_class": "temperature",
             "state_class": "measurement",
             "device": device,
         })
         self._discovery("sensor", f"thermostat_{mac_hex}_humidity", {
-            "name": "湿度",
+            "name": "æ¹¿åº¦",
             "unique_id": f"moorgen_thermostat_{mac_hex}_humidity",
             "state_topic": f"{topic}/humidity",
             "unit_of_measurement": "%",
@@ -573,11 +572,11 @@ class Bridge:
         common = {
             "availability_topic": f"{self.topic_prefix}/availability",
             "unique_id": "moorgen_tech_system",
-            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "摩根科技系统总控"},
+            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "æ©æ ¹ç§æç³»ç»æ»æ§"},
         }
         self._discovery("switch", "power", {
             **common,
-            "name": "科技系统总开关",
+            "name": "ç§æç³»ç»æ»å¼å³",
             "unique_id": "moorgen_tech_system_power",
             "command_topic": f"{self.topic_prefix}/power/set",
             "state_topic": f"{self.topic_prefix}/power/state",
@@ -585,7 +584,7 @@ class Bridge:
         })
         self._discovery("select", "mode", {
             **common,
-            "name": "科技系统模式",
+            "name": "ç§æç³»ç»æ¨¡å¼",
             "unique_id": "moorgen_tech_system_mode",
             "command_topic": f"{self.topic_prefix}/mode/set",
             "state_topic": f"{self.topic_prefix}/mode/state",
@@ -594,7 +593,7 @@ class Bridge:
         })
         self._discovery("select", "scene", {
             **common,
-            "name": "科技系统场景",
+            "name": "ç§æç³»ç»åºæ¯",
             "unique_id": "moorgen_tech_system_scene",
             "command_topic": f"{self.topic_prefix}/scene/set",
             "state_topic": f"{self.topic_prefix}/scene/state",
@@ -613,11 +612,11 @@ class Bridge:
         common = {
             "availability_topic": f"{self.topic_prefix}/availability",
             "unique_id": "moorgen_tech_system",
-            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "摩根科技系统总控"},
+            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "æ©æ ¹ç§æç³»ç»æ»æ§"},
         }
         self._discovery("switch", "winter_humidifier", {
             **common,
-            "name": "冬季加湿",
+            "name": "å¬å­£å æ¹¿",
             "unique_id": "moorgen_tech_system_winter_humidifier",
             "command_topic": f"{self.topic_prefix}/winter_humidifier/set",
             "state_topic": f"{self.topic_prefix}/winter_humidifier/state",
