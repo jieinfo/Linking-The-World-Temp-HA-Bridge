@@ -53,6 +53,12 @@ MODE_VALUES = {"cool": 1, "heat": 2, "ventilation": 3, "dehumidify": 4}
 SCENE_VALUES = {"away": 0, "home": 1}
 MODE_NAMES = {value: name for name, value in MODE_VALUES.items()}
 SCENE_NAMES = {value: name for name, value in SCENE_VALUES.items()}
+CLIMATE_MODE_FOR_SYSTEM_MODE = {
+    "cool": "cool",
+    "heat": "heat",
+    "ventilation": "fan_only",
+    "dehumidify": "dry",
+}
 
 
 @dataclass(frozen=True)
@@ -456,9 +462,11 @@ class Bridge:
             self.client.send_command_to(thermostat.mac, COMMAND_MODE, raw_value)
             thermostat.target_temperature = raw_value / 2
         elif setting in ("power", "mode"):
-            if value not in ("off", "on", "heat"):
+            if setting == "mode" and value not in ("off", self._thermostat_active_hvac_mode()):
+                raise RuntimeError(f"unsupported thermostat HVAC mode: {value}")
+            if setting == "power" and value not in ("off", "on"):
                 raise RuntimeError(f"unsupported thermostat power state: {value}")
-            enabled = value in ("on", "heat")
+            enabled = value != "off"
             self.client.send_command_to(
                 thermostat.mac,
                 COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
@@ -494,6 +502,7 @@ class Bridge:
                 setattr(self.state, name, value)
                 self._publish_state(name, value)
             self._refresh_conditional_entities()
+            self._refresh_thermostat_climate_modes()
 
         thermostat = decode_thermostat_status(body)
         if thermostat:
@@ -511,12 +520,22 @@ class Bridge:
     def _thermostat_topic(self, thermostat: ThermostatState) -> str:
         return f"{self.topic_prefix}/thermostat/{thermostat.mac.hex()}"
 
+    def _thermostat_active_hvac_mode(self) -> str:
+        # Child panels only enable a room. The central technology system owns
+        # the actual HVAC mode, so reflect that mode on each child Climate card.
+        return CLIMATE_MODE_FOR_SYSTEM_MODE.get(self.state.mode or "", "heat")
+
+    def _refresh_thermostat_climate_modes(self) -> None:
+        for thermostat in self.thermostats.values():
+            self._publish_thermostat_discovery(thermostat)
+            self._publish_thermostat_state(thermostat)
+
     def _publish_thermostat_state(self, thermostat: ThermostatState) -> None:
         topic = self._thermostat_topic(thermostat)
         self.mqtt.publish(f"{topic}/power/state", thermostat.power, retain=True)
         self.mqtt.publish(
             f"{topic}/mode/state",
-            "heat" if thermostat.power == "ON" else "off",
+            self._thermostat_active_hvac_mode() if thermostat.power == "ON" else "off",
             retain=True,
         )
         self.mqtt.publish(f"{topic}/temperature/state", f"{thermostat.target_temperature:g}", retain=True)
@@ -534,7 +553,7 @@ class Bridge:
             "unique_id": f"moorgen_thermostat_{mac_hex}",
             "mode_command_topic": f"{topic}/mode/set",
             "mode_state_topic": f"{topic}/mode/state",
-            "modes": ["off", "heat"],
+            "modes": ["off", self._thermostat_active_hvac_mode()],
             "temperature_command_topic": f"{topic}/temperature/set",
             "temperature_state_topic": f"{topic}/temperature/state",
             "current_temperature_topic": f"{topic}/current_temperature",
