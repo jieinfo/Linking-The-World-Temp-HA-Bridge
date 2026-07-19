@@ -28,3 +28,9 @@ safety:
   # Mark a discovered panel unavailable after this many seconds without a report.
   # Set 0 to disable stale-device detection.
   thermostat_offline_after: 900
+  # Reject commands until a compatible MC7021 status report has been received.
+  require_protocol_verification: true
+  # Rebuild the MC7021 session if it has no incoming traffic for this long.
+  controller_silence_timeout: 90
+  # Keep HA on the last confirmed value when the controller does not report this command.
+  command_confirmation_timeout: 8
