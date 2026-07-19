@@ -1,5 +1,5 @@
 name: Linking The World Temp Bridge
-version: 0.2.0
+version: 0.2.1
 slug: moorgen_ha_bridge
 description: Local Home Assistant bridge for Linking The World temperature systems
 url: https://github.com/jieinfo/ygsj-moorgen
@@ -31,7 +31,7 @@ options:
   command_min_interval: 0.5
   thermostat_offline_after: 900
   require_protocol_verification: true
-  controller_silence_timeout: 90
+  controller_silence_timeout: 300
   command_confirmation_timeout: 8
 schema:
   moorgen_host: str
