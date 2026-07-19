@@ -58,6 +58,22 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["ventilation"], "fan_only")
         self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["dehumidify"], "dry")
 
+    def test_total_control_selects_use_chinese_labels_but_accept_legacy_english(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        self.assertEqual(bridge._normalize_mode("制冷"), "cool")
+        self.assertEqual(bridge._normalize_mode("heat"), "heat")
+        self.assertEqual(bridge._normalize_scene("居家"), "home")
+        self.assertEqual(bridge._normalize_scene("away"), "away")
+        bridge.mqtt.publish = MagicMock()
+        bridge._publish_state("mode", "dehumidify")
+        bridge._publish_state("scene", "home")
+        self.assertEqual(bridge.mqtt.publish.call_args_list[0].args[1], "除湿")
+        self.assertEqual(bridge.mqtt.publish.call_args_list[1].args[1], "居家")
+
     def test_configurable_total_control_mac_and_text_fallback(self):
         custom_mac = bytes.fromhex("0102030405060708")
         body = tlv(0x0004, custom_mac) + tlv(0x000B, b"\x01") + tlv(0x000A, b"\x02")

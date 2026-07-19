@@ -56,6 +56,10 @@ MODE_VALUES = {"cool": 1, "heat": 2, "ventilation": 3, "dehumidify": 4}
 SCENE_VALUES = {"away": 0, "home": 1}
 MODE_NAMES = {value: name for name, value in MODE_VALUES.items()}
 SCENE_NAMES = {value: name for name, value in SCENE_VALUES.items()}
+MODE_LABELS = {"cool": "制冷", "heat": "制热", "ventilation": "通风", "dehumidify": "除湿"}
+SCENE_LABELS = {"away": "离家", "home": "居家"}
+MODE_INPUTS = {**{name: name for name in MODE_VALUES}, **{label: name for name, label in MODE_LABELS.items()}}
+SCENE_INPUTS = {**{name: name for name in SCENE_VALUES}, **{label: name for name, label in SCENE_LABELS.items()}}
 CLIMATE_MODE_FOR_SYSTEM_MODE = {
     "cool": "cool",
     "heat": "heat",
@@ -534,11 +538,13 @@ class Bridge:
             elif suffix == "mode":
                 if not self.state.can_change_mode:
                     raise RuntimeError("mode changes are only allowed while the tech system is off")
-                self._send_host_command(COMMAND_MODE, MODE_VALUES[value])
-                self._track_pending_command("system", "总控模式", {"mode": value})
+                mode = self._normalize_mode(value)
+                self._send_host_command(COMMAND_MODE, MODE_VALUES[mode])
+                self._track_pending_command("system", "总控模式", {"mode": mode})
             elif suffix == "scene":
-                self._send_host_command(COMMAND_SCENE, SCENE_VALUES[value])
-                self._track_pending_command("system", "总控场景", {"scene": value})
+                scene = self._normalize_scene(value)
+                self._send_host_command(COMMAND_SCENE, SCENE_VALUES[scene])
+                self._track_pending_command("system", "总控场景", {"scene": scene})
             elif suffix == "winter_humidifier":
                 if not self.state.show_winter_humidifier:
                     raise RuntimeError("winter humidifier is only available in heat mode")
@@ -555,6 +561,20 @@ class Bridge:
 
     def _send_host_command(self, command: int, value: int | None = None) -> None:
         self._send_command_to(self.tech_system_mac, command, value)
+
+    @staticmethod
+    def _normalize_mode(value: str) -> str:
+        try:
+            return MODE_INPUTS[value]
+        except KeyError as error:
+            raise RuntimeError(f"unsupported tech system mode: {value}") from error
+
+    @staticmethod
+    def _normalize_scene(value: str) -> str:
+        try:
+            return SCENE_INPUTS[value]
+        except KeyError as error:
+            raise RuntimeError(f"unsupported tech system scene: {value}") from error
 
     def _send_command_to(self, mac: bytes, command: int, value: int | None = None) -> None:
         if not self.allow_control:
@@ -699,6 +719,10 @@ class Bridge:
         self.mqtt.publish(f"{self.topic_prefix}/bridge/panel_count/state", str(len(self.thermostats)), retain=True)
 
     def _publish_state(self, name: str, value: str) -> None:
+        if name == "mode":
+            value = MODE_LABELS.get(value, value)
+        elif name == "scene":
+            value = SCENE_LABELS.get(value, value)
         self.mqtt.publish(f"{self.topic_prefix}/{name}/state", value, retain=True)
 
     def _thermostat_name(self, thermostat: ThermostatState) -> str:
@@ -808,7 +832,7 @@ class Bridge:
             "command_topic": f"{self.topic_prefix}/mode/set",
             "state_topic": f"{self.topic_prefix}/mode/state",
             "availability_topic": f"{self.topic_prefix}/mode/availability",
-            "options": list(MODE_VALUES),
+            "options": list(MODE_LABELS.values()),
         })
         self._discovery("select", "scene", {
             **common,
@@ -816,7 +840,7 @@ class Bridge:
             "unique_id": "moorgen_tech_system_scene",
             "command_topic": f"{self.topic_prefix}/scene/set",
             "state_topic": f"{self.topic_prefix}/scene/state",
-            "options": list(SCENE_VALUES),
+            "options": list(SCENE_LABELS.values()),
         })
         self._discovery("binary_sensor", "bridge_connection", {
             **common,
