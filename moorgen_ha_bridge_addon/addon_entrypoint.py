@@ -21,6 +21,7 @@ def load_options() -> dict:
             "port": int(options["moorgen_port"]),
             "username": options["moorgen_username"],
             "password": options["moorgen_password"],
+            "client_id": options["moorgen_client_id"],
         },
         "mqtt": {
             "host": options["mqtt_host"],

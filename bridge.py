@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import secrets
 import socket
 import struct
 import threading
@@ -32,6 +31,7 @@ VERSION = 1
 # protocol decoder in the current MC7021 sample.
 TRAILER = b"\x23" + b"\x00" * 6
 TECH_SYSTEM_MAC = bytes.fromhex("ff00ffffffff00ff")
+DEFAULT_CLIENT_ID = "ff9549d5891998e5"
 
 # A valid RSA public key is required by the observed first YAS HCP hello. The
 # host did not encrypt subsequent App traffic in the supplied capture, so a
@@ -122,7 +122,7 @@ def tlv(tag: int, value: bytes) -> bytes:
 
 
 class MoorgenClient:
-    def __init__(self, host: str, port: int, username: str, password: str) -> None:
+    def __init__(self, host: str, port: int, username: str, password: str, client_id: str = DEFAULT_CLIENT_ID) -> None:
         self.host = host
         self.port = port
         self.username = username
@@ -130,7 +130,9 @@ class MoorgenClient:
         self._socket: socket.socket | None = None
         self._decoder = YasHcpDecoder()
         self._sequence = 0
-        self._client_id = ""
+        if len(client_id) != 16 or any(char not in "0123456789abcdefABCDEF" for char in client_id):
+            raise ValueError("moorgen client_id must be 16 hexadecimal characters")
+        self._client_id = client_id.lower()
         self._write_lock = threading.Lock()
         self._ready = threading.Event()
         self._closed = threading.Event()
@@ -180,7 +182,6 @@ class MoorgenClient:
             self._send(6, 0x0E, b"")
 
     def _send_hello(self) -> None:
-        self._client_id = secrets.token_hex(8)
         body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
         body += bytes.fromhex("13021000") + self._client_id.encode("ascii")
         self._send(1, 1, body)
@@ -252,7 +253,13 @@ class Bridge:
     def __init__(self, config: dict) -> None:
         self.config = config
         host = config["moorgen"]
-        self.client = MoorgenClient(host["host"], int(host.get("port", 9000)), host["username"], host["password"])
+        self.client = MoorgenClient(
+            host["host"],
+            int(host.get("port", 9000)),
+            host["username"],
+            host["password"],
+            host.get("client_id", DEFAULT_CLIENT_ID),
+        )
         self.client.on_status = self._status_received
         mqtt_config = config["mqtt"]
         self.topic_prefix = mqtt_config.get("topic_prefix", "moorgen/tech_system")
