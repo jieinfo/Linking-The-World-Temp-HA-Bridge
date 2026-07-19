@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lingking The World Temp HA Bridge for MC7021 controllers.
+"""Linking The World Temp HA Bridge for MC7021 controllers.
 
 The implementation follows the verified Android App <-> MC7021 YAS HCP capture.
 It deliberately acts as a local App client, not an MT8157 gateway, so it never
