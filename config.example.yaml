@@ -31,6 +31,6 @@ safety:
   # Reject commands until a compatible MC7021 status report has been received.
   require_protocol_verification: true
   # Rebuild the MC7021 session if it has no incoming traffic for this long.
-  controller_silence_timeout: 90
+  controller_silence_timeout: 300
   # Keep HA on the last confirmed value when the controller does not report this command.
   command_confirmation_timeout: 8
