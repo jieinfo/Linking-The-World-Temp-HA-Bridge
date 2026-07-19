@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Experimental local Home Assistant bridge for the Moorgen tech-system controller.
+"""LINGKING THE WORLD SixHeng local bridge for MC7021 controllers.
 
 The implementation follows the verified Android App <-> MC7021 YAS HCP capture.
 It deliberately acts as a local App client, not an MT8157 gateway, so it never
@@ -665,7 +665,7 @@ class Bridge:
         common = {
             "availability_topic": f"{self.topic_prefix}/availability",
             "unique_id": "moorgen_tech_system",
-            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "摩根科技系统总控"},
+            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "LINGKING 六恒科技系统总控"},
         }
         self._discovery("switch", "power", {
             **common,
@@ -705,7 +705,7 @@ class Bridge:
         common = {
             "availability_topic": f"{self.topic_prefix}/availability",
             "unique_id": "moorgen_tech_system",
-            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "摩根科技系统总控"},
+            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "LINGKING 六恒科技系统总控"},
         }
         self._discovery("switch", "winter_humidifier", {
             **common,
