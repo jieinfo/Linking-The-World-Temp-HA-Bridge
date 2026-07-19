@@ -37,6 +37,9 @@ def load_options() -> dict:
             "allow_control": options.get("allow_control", True),
             "command_min_interval": float(options.get("command_min_interval", 0.5)),
             "thermostat_offline_after": float(options.get("thermostat_offline_after", 900)),
+            "require_protocol_verification": options.get("require_protocol_verification", True),
+            "controller_silence_timeout": float(options.get("controller_silence_timeout", 90)),
+            "command_confirmation_timeout": float(options.get("command_confirmation_timeout", 8)),
         },
     }
 
