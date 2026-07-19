@@ -127,21 +127,34 @@ class TechSystemState:
         return self.mode == "heat"
 
 
+@dataclass
+class ThermostatState:
+    mac: bytes
+    room_id: str
+    target_temperature: float
+    current_temperature: float
+    power: str
+    humidity: int
+
+
 def tlv(tag: int, value: bytes) -> bytes:
     return struct.pack("<HH", tag, len(value)) + value
 
 
-def parse_tlvs(data: bytes) -> dict[int, bytes]:
+def iter_tlvs(data: bytes):
     """Parse the flat little-endian tag/length/value records used by status events."""
-    output: dict[int, bytes] = {}
     offset = 0
     while offset + 4 <= len(data):
         tag, length = struct.unpack_from("<HH", data, offset)
         offset += 4
         if offset + length > len(data):
             break
-        output[tag] = data[offset : offset + length]
+        yield tag, data[offset : offset + length]
         offset += length
+
+
+def parse_tlvs(data: bytes) -> dict[int, bytes]:
+    return dict(iter_tlvs(data))
     return output
 
 
@@ -170,6 +183,30 @@ def decode_tech_system_status(body: bytes) -> dict[str, str]:
     return state
 
 
+def decode_thermostat_status(body: bytes) -> ThermostatState | None:
+    """Decode a child thermostat report verified against the supplied App PCAP."""
+    fields = parse_tlvs(body)
+    mac = fields.get(0x0004)
+    packed = fields.get(0x000A)
+    power = fields.get(0x000B)
+    if (
+        not mac
+        or fields.get(0x0075) != TECH_SYSTEM_MAC
+        or len(packed or b"") != 5
+        or not power
+    ):
+        return None
+    room_id = fields.get(0x0030, b"").decode("utf-8", errors="replace")
+    return ThermostatState(
+        mac=mac,
+        room_id=room_id,
+        target_temperature=packed[0] / 2,
+        current_temperature=packed[1] / 2,
+        power="heat" if power[0] else "off",
+        humidity=packed[3],
+    )
+
+
 class MoorgenClient:
     def __init__(self, host: str, port: int, username: str, password: str, client_id: str = DEFAULT_CLIENT_ID) -> None:
         self.host = host
@@ -188,6 +225,7 @@ class MoorgenClient:
         self._inbox: Queue[YasHcpFrame] = Queue()
         self._reader: threading.Thread | None = None
         self.on_status: Callable[[bytes], None] | None = None
+        self.on_frame: Callable[[YasHcpFrame], None] | None = None
 
     def connect(self) -> None:
         self._closed.clear()
@@ -217,10 +255,13 @@ class MoorgenClient:
         self._socket = None
 
     def send_command(self, command: int, value: int | None = None) -> None:
+        self.send_command_to(TECH_SYSTEM_MAC, command, value)
+
+    def send_command_to(self, mac: bytes, command: int, value: int | None = None) -> None:
         if not self._ready.is_set():
             raise RuntimeError("MC7021 session is not ready")
         body = tlv(0x0010, b"\x01")
-        body += tlv(0x0004, TECH_SYSTEM_MAC)
+        body += tlv(0x0004, mac)
         body += tlv(0x0009, bytes((command,)))
         if value is not None:
             body += tlv(0x000A, bytes((value,)))
@@ -287,6 +328,8 @@ class MoorgenClient:
                     raise ConnectionError("MC7021 closed the socket")
                 for frame in self._decoder.feed(data):
                     LOG.debug("received kind=%02x opcode=%02x body=%s", frame.kind, frame.opcode, frame.body.hex())
+                    if self.on_frame:
+                        self.on_frame(frame)
                     if frame.kind == 5 and frame.opcode == 0x0C and self.on_status:
                         self.on_status(frame.body)
                     else:
@@ -310,6 +353,7 @@ class Bridge:
             host.get("client_id", DEFAULT_CLIENT_ID),
         )
         self.client.on_status = self._status_received
+        self.client.on_frame = self._frame_received
         mqtt_config = config["mqtt"]
         self.topic_prefix = mqtt_config.get("topic_prefix", "moorgen/tech_system")
         self.discovery_prefix = mqtt_config.get("discovery_prefix", "homeassistant")
@@ -325,6 +369,8 @@ class Bridge:
         # report is not fully mapped. Send an OFF command once after startup to
         # establish the safe state needed for mode changes.
         self.state = TechSystemState()
+        self.room_names: dict[str, str] = {}
+        self.thermostats: dict[str, ThermostatState] = {}
 
     def run(self) -> None:
         self.client.connect()
@@ -344,8 +390,11 @@ class Bridge:
     def _mqtt_connected(self, client, userdata, flags, reason_code, properties) -> None:
         if reason_code.is_failure:
             raise RuntimeError(f"MQTT connection failed: {reason_code}")
-        client.subscribe(f"{self.topic_prefix}/+/set")
+        client.subscribe(f"{self.topic_prefix}/#")
         self._publish_discovery()
+        for thermostat in self.thermostats.values():
+            self._publish_thermostat_discovery(thermostat)
+            self._publish_thermostat_state(thermostat)
         client.publish(f"{self.topic_prefix}/availability", "online", retain=True)
         LOG.info("connected to MQTT broker")
 
@@ -354,8 +403,18 @@ class Bridge:
 
     def _mqtt_message(self, client, userdata, message) -> None:
         value = message.payload.decode("utf-8").strip().lower()
-        suffix = message.topic.removeprefix(f"{self.topic_prefix}/").removesuffix("/set")
+        relative_topic = message.topic.removeprefix(f"{self.topic_prefix}/")
+        if not relative_topic.endswith("/set"):
+            return
+        parts = relative_topic.split("/")
         try:
+            if len(parts) == 4 and parts[0] == "thermostat" and parts[3] == "set":
+                try:
+                    self._thermostat_command(parts[1], parts[2], value)
+                except (ValueError, RuntimeError, OSError) as error:
+                    LOG.error("thermostat command %s=%s failed: %s", parts[2], value, error)
+                return
+            suffix = relative_topic.removesuffix("/set")
             if suffix == "power":
                 self.client.send_command(COMMAND_POWER_ON if value == "on" else COMMAND_POWER_OFF)
                 self.state.power = "ON" if value == "on" else "OFF"
@@ -383,19 +442,106 @@ class Bridge:
         except (KeyError, RuntimeError, OSError) as error:
             LOG.error("command %s=%s failed: %s", suffix, value, error)
 
+    def _thermostat_command(self, mac_hex: str, setting: str, value: str) -> None:
+        thermostat = self.thermostats.get(mac_hex)
+        if not thermostat:
+            raise RuntimeError(f"unknown thermostat: {mac_hex}")
+        if setting == "temperature":
+            temperature = float(value)
+            raw_value = round(temperature * 2)
+            if not 10 <= raw_value <= 80:
+                raise RuntimeError("temperature must be between 5 and 40 degrees")
+            self.client.send_command_to(thermostat.mac, COMMAND_MODE, raw_value)
+            thermostat.target_temperature = raw_value / 2
+        elif setting == "mode":
+            if value not in ("off", "heat"):
+                raise RuntimeError(f"unsupported thermostat mode: {value}")
+            self.client.send_command_to(
+                thermostat.mac,
+                COMMAND_POWER_ON if value == "heat" else COMMAND_POWER_OFF,
+            )
+            thermostat.power = value
+        else:
+            raise RuntimeError(f"unsupported thermostat setting: {setting}")
+        self._publish_thermostat_state(thermostat)
+
+    def _frame_received(self, frame: YasHcpFrame) -> None:
+        if frame.kind != 3 or frame.opcode != 8:
+            return
+        room_id = ""
+        changed = False
+        for tag, value in iter_tlvs(frame.body):
+            if tag == 0x0030:
+                room_id = value.decode("utf-8", errors="replace")
+            elif tag == 0x0036 and room_id:
+                name = value.decode("utf-8", errors="replace")
+                if self.room_names.get(room_id) != name:
+                    self.room_names[room_id] = name
+                    changed = True
+        if changed:
+            for thermostat in self.thermostats.values():
+                self._publish_thermostat_discovery(thermostat)
+
     def _status_received(self, body: bytes) -> None:
         payload = json.dumps({"raw": body.hex()}, separators=(",", ":"))
         self.mqtt.publish(f"{self.topic_prefix}/status_raw", payload, retain=False)
         state = decode_tech_system_status(body)
-        if not state:
-            return
-        for name, value in state.items():
-            setattr(self.state, name, value)
-            self._publish_state(name, value)
-        self._refresh_conditional_entities()
+        if state:
+            for name, value in state.items():
+                setattr(self.state, name, value)
+                self._publish_state(name, value)
+            self._refresh_conditional_entities()
+
+        thermostat = decode_thermostat_status(body)
+        if thermostat:
+            self.thermostats[thermostat.mac.hex()] = thermostat
+            self._publish_thermostat_discovery(thermostat)
+            self._publish_thermostat_state(thermostat)
 
     def _publish_state(self, name: str, value: str) -> None:
         self.mqtt.publish(f"{self.topic_prefix}/{name}/state", value, retain=True)
+
+    def _thermostat_name(self, thermostat: ThermostatState) -> str:
+        room_name = self.room_names.get(thermostat.room_id, thermostat.room_id or thermostat.mac.hex())
+        return f"{room_name} 温控面板"
+
+    def _thermostat_topic(self, thermostat: ThermostatState) -> str:
+        return f"{self.topic_prefix}/thermostat/{thermostat.mac.hex()}"
+
+    def _publish_thermostat_state(self, thermostat: ThermostatState) -> None:
+        topic = self._thermostat_topic(thermostat)
+        self.mqtt.publish(f"{topic}/mode/state", thermostat.power, retain=True)
+        self.mqtt.publish(f"{topic}/temperature/state", f"{thermostat.target_temperature:g}", retain=True)
+        self.mqtt.publish(f"{topic}/current_temperature", f"{thermostat.current_temperature:g}", retain=True)
+        self.mqtt.publish(f"{topic}/humidity", str(thermostat.humidity), retain=True)
+
+    def _publish_thermostat_discovery(self, thermostat: ThermostatState) -> None:
+        mac_hex = thermostat.mac.hex()
+        topic = self._thermostat_topic(thermostat)
+        device = {"identifiers": [f"moorgen_thermostat_{mac_hex}"], "name": self._thermostat_name(thermostat)}
+        self._discovery("climate", f"thermostat_{mac_hex}", {
+            "name": "温控",
+            "unique_id": f"moorgen_thermostat_{mac_hex}",
+            "mode_command_topic": f"{topic}/mode/set",
+            "mode_state_topic": f"{topic}/mode/state",
+            "modes": ["off", "heat"],
+            "temperature_command_topic": f"{topic}/temperature/set",
+            "temperature_state_topic": f"{topic}/temperature/state",
+            "current_temperature_topic": f"{topic}/current_temperature",
+            "min_temp": 5,
+            "max_temp": 40,
+            "temp_step": 0.5,
+            "device": device,
+        })
+        self._discovery("sensor", f"thermostat_{mac_hex}_humidity", {
+            "name": "湿度",
+            "unique_id": f"moorgen_thermostat_{mac_hex}_humidity",
+            "state_topic": f"{topic}/humidity",
+            "unit_of_measurement": "%",
+            "device_class": "humidity",
+            "state_class": "measurement",
+            "device": device,
+        })
 
     def _publish_discovery(self) -> None:
         common = {
