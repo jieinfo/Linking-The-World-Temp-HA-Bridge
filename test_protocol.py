@@ -3,6 +3,7 @@ import unittest
 
 from bridge import (
     CLIENT_PUBLIC_KEY,
+    DEFAULT_CLIENT_ID,
     COMMAND_MODE,
     COMMAND_POWER_ON,
     COMMAND_SCENE,
@@ -23,6 +24,10 @@ class ProtocolTests(unittest.TestCase):
         decoded = YasHcpDecoder().feed(source)
         self.assertEqual(decoded, [YasHcpFrame(4, 9, 37, b"example")])
 
+    def test_captured_wire_envelope(self):
+        frame = YasHcpFrame(1, 3, 0, b"x").encode()
+        self.assertEqual(frame, b"#\x12\x00dooyashcp\x01\x01\x03\x00\x00\x01\x00x#")
+
     def test_captured_tech_system_command_shape(self):
         body = tlv(0x0010, b"\x01") + tlv(0x0004, TECH_SYSTEM_MAC)
         body += tlv(0x0009, bytes((COMMAND_MODE,))) + tlv(0x000A, bytes((MODE_VALUES["heat"],)))
@@ -40,7 +45,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_captured_hello_body_length(self):
         body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
-        body += bytes.fromhex("13021000") + b"ff9549d5891998e5"
+        body += bytes.fromhex("13021000") + DEFAULT_CLIENT_ID.encode("ascii")
         self.assertEqual(len(body), 295)
 
     def test_tech_system_interlocks(self):
