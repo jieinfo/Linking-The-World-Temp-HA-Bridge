@@ -1,4 +1,5 @@
 import struct
+import time
 import unittest
 from unittest.mock import MagicMock
 
@@ -71,7 +72,12 @@ class ProtocolTests(unittest.TestCase):
         config = {
             "moorgen": {"host": "192.0.2.1", "port": 9000, "username": "Test", "password": "", "client_id": DEFAULT_CLIENT_ID},
             "mqtt": {"host": "broker", "port": 1883, "client_id": "test"},
-            "safety": {"allow_control": False, "command_min_interval": 1, "thermostat_offline_after": 1},
+            "safety": {
+                "allow_control": False,
+                "command_min_interval": 1,
+                "thermostat_offline_after": 1,
+                "require_protocol_verification": False,
+            },
         }
         bridge = Bridge(config)
         bridge.client.send_command_to = MagicMock()
@@ -95,7 +101,7 @@ class ProtocolTests(unittest.TestCase):
         config = {
             "moorgen": {"host": "192.0.2.1", "port": 9000, "username": "Test", "password": "", "client_id": DEFAULT_CLIENT_ID},
             "mqtt": {"host": "broker", "port": 1883, "client_id": "test"},
-            "safety": {"command_min_interval": 0},
+            "safety": {"command_min_interval": 0, "require_protocol_verification": False},
         }
         bridge = Bridge(config)
         thermostat = ThermostatState(bytes.fromhex("ff00ffffffff01ff"), "r1100", 20, 28, "OFF", 60)
@@ -105,9 +111,50 @@ class ProtocolTests(unittest.TestCase):
 
         bridge._thermostat_command(thermostat.mac.hex(), "temperature", "21")
         bridge.client.send_command_to.assert_called_once_with(thermostat.mac, COMMAND_MODE, 42)
-        self.assertEqual(thermostat.target_temperature, 21)
+        self.assertEqual(thermostat.target_temperature, 20)
+        self.assertIn(f"thermostat_{thermostat.mac.hex()}", bridge.pending_commands)
         with self.assertRaises(RuntimeError):
             bridge._thermostat_command(thermostat.mac.hex(), "temperature", "21.5")
+
+    def test_protocol_gate_and_confirmation_keep_only_controller_confirmed_state(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+            "safety": {"command_min_interval": 0, "command_confirmation_timeout": 1},
+        }
+        bridge = Bridge(config)
+        bridge.client.send_command_to = MagicMock()
+        bridge.mqtt.publish = MagicMock()
+        with self.assertRaises(RuntimeError):
+            bridge._send_host_command(COMMAND_POWER_ON)
+
+        bridge.protocol_verified = True
+        bridge._send_host_command(COMMAND_POWER_ON)
+        bridge._track_pending_command("system", "总控开关", {"power": "ON"})
+        self.assertIsNone(bridge.state.power)
+        bridge._confirm_pending_command("system", {"power": "OFF"})
+        self.assertIn("system", bridge.pending_commands)
+        bridge._confirm_pending_command("system", {"power": "ON"})
+        self.assertNotIn("system", bridge.pending_commands)
+        self.assertIn("已确认", bridge.last_command_status)
+
+    def test_controller_health_detects_reader_failure_and_silence(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+            "safety": {"controller_silence_timeout": 1},
+        }
+        bridge = Bridge(config)
+        bridge.client = MagicMock(is_ready=False, reader_alive=False, last_received_at=0)
+        with self.assertRaises(ConnectionError):
+            bridge._assert_controller_healthy()
+        bridge.client.is_ready = True
+        bridge.client.reader_alive = True
+        bridge.client.last_received_at = -10
+        with self.assertRaises(ConnectionError):
+            bridge._assert_controller_healthy()
+        bridge.client.last_received_at = time.monotonic()
+        bridge._assert_controller_healthy()
 
     def test_captured_hello_body_length(self):
         body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
