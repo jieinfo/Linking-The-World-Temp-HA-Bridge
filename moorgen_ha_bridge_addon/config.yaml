@@ -1,7 +1,7 @@
-name: LINGKING SixHeng Bridge
-version: 0.1.17
+name: Lingking The World Temp Bridge
+version: 0.1.18
 slug: moorgen_ha_bridge
-description: Local Home Assistant bridge for LINGKING THE WORLD SixHeng systems
+description: Local Home Assistant bridge for Lingking The World temperature systems
 url: https://github.com/jieinfo/ygsj-moorgen
 arch:
   - aarch64
