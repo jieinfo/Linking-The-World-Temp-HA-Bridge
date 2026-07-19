@@ -91,6 +91,24 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(thermostat.available)
         self.assertIn("availability", bridge.mqtt.publish.call_args.args[0])
 
+    def test_child_target_temperature_requires_whole_degrees(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "port": 9000, "username": "Test", "password": "", "client_id": DEFAULT_CLIENT_ID},
+            "mqtt": {"host": "broker", "port": 1883, "client_id": "test"},
+            "safety": {"command_min_interval": 0},
+        }
+        bridge = Bridge(config)
+        thermostat = ThermostatState(bytes.fromhex("ff00ffffffff01ff"), "r1100", 20, 28, "OFF", 60)
+        bridge.thermostats[thermostat.mac.hex()] = thermostat
+        bridge.client.send_command_to = MagicMock()
+        bridge._publish_thermostat_state = MagicMock()
+
+        bridge._thermostat_command(thermostat.mac.hex(), "temperature", "21")
+        bridge.client.send_command_to.assert_called_once_with(thermostat.mac, COMMAND_MODE, 42)
+        self.assertEqual(thermostat.target_temperature, 21)
+        with self.assertRaises(RuntimeError):
+            bridge._thermostat_command(thermostat.mac.hex(), "temperature", "21.5")
+
     def test_captured_hello_body_length(self):
         body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
         body += bytes.fromhex("13021000") + DEFAULT_CLIENT_ID.encode("ascii")
