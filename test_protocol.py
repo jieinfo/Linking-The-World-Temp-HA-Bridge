@@ -1,5 +1,6 @@
 import struct
 import unittest
+from unittest.mock import MagicMock
 
 from bridge import (
     CLIENT_PUBLIC_KEY,
@@ -9,12 +10,16 @@ from bridge import (
     COMMAND_SCENE,
     COMMAND_WINTER_HUMIDIFIER,
     CLIMATE_MODE_FOR_SYSTEM_MODE,
+    Bridge,
+    decode_text,
     decode_thermostat_status,
     decode_tech_system_status,
     MODE_VALUES,
     SCENE_VALUES,
     TECH_SYSTEM_MAC,
     TechSystemState,
+    ThermostatState,
+    parse_device_mac,
     YasHcpDecoder,
     YasHcpFrame,
     tlv,
@@ -51,6 +56,40 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["heat"], "heat")
         self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["ventilation"], "fan_only")
         self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["dehumidify"], "dry")
+
+    def test_configurable_total_control_mac_and_text_fallback(self):
+        custom_mac = bytes.fromhex("0102030405060708")
+        body = tlv(0x0004, custom_mac) + tlv(0x000B, b"\x01") + tlv(0x000A, b"\x02")
+        self.assertEqual(decode_tech_system_status(body, custom_mac)["mode"], "heat")
+        self.assertEqual(decode_tech_system_status(body), {})
+        self.assertEqual(parse_device_mac("01:02:03:04:05:06:07:08"), custom_mac)
+        self.assertEqual(decode_text("温控面板".encode("gb18030")), "温控面板")
+        with self.assertRaises(ValueError):
+            parse_device_mac("not-a-mac")
+
+    def test_read_only_rate_limit_and_stale_panel_protection(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "port": 9000, "username": "Test", "password": "", "client_id": DEFAULT_CLIENT_ID},
+            "mqtt": {"host": "broker", "port": 1883, "client_id": "test"},
+            "safety": {"allow_control": False, "command_min_interval": 1, "thermostat_offline_after": 1},
+        }
+        bridge = Bridge(config)
+        bridge.client.send_command_to = MagicMock()
+        with self.assertRaises(RuntimeError):
+            bridge._send_host_command(COMMAND_POWER_ON)
+
+        bridge.allow_control = True
+        bridge._send_host_command(COMMAND_POWER_ON)
+        with self.assertRaises(RuntimeError):
+            bridge._send_host_command(COMMAND_POWER_ON)
+
+        thermostat = ThermostatState(bytes.fromhex("ff00ffffffff01ff"), "r1100", 20, 28, "OFF", 60)
+        thermostat.last_seen = -100
+        bridge.thermostats[thermostat.mac.hex()] = thermostat
+        bridge.mqtt.publish = MagicMock()
+        bridge._refresh_thermostat_availability()
+        self.assertFalse(thermostat.available)
+        self.assertIn("availability", bridge.mqtt.publish.call_args.args[0])
 
     def test_captured_hello_body_length(self):
         body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
