@@ -1,6 +1,6 @@
-# LINGKING THE WORLD 六恒 Home Assistant Bridge
+# Lingking The World Temp HA Bridge
 
-面向 **LINGKING THE WORLD** 小区六恒科技系统的本地 Home Assistant
+面向 **Lingking The World** 小区六恒科技系统的本地 Home Assistant
 桥接项目。系统控制器来自 Moorgen，本项目通过 MC7021 已启用的本地
 `yashcp` TCP/9000 通讯，将六恒总控和各房间子温控面板接入 Home Assistant。
 
@@ -32,7 +32,7 @@
 https://github.com/jieinfo/ygsj-moorgen
 ```
 
-安装 **LINGKING SixHeng Bridge**，填写主机局域网地址、本地主机账号和 MQTT
+安装 **Lingking The World Temp Bridge**，填写主机局域网地址、本地主机账号和 MQTT
 信息。默认使用 HA 的 Mosquitto 附加组件：`core-mosquitto:1883`。
 
 首次为新住户配置时，建议：
