@@ -1,5 +1,5 @@
 name: Moorgen HA Bridge
-version: 0.1.6
+version: 0.1.7
 slug: moorgen_ha_bridge
 description: Experimental local bridge for the MC7021 technology-system controller
 url: https://github.com/jieinfo/ygsj-moorgen
