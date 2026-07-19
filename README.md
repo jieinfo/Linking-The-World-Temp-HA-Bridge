@@ -57,7 +57,7 @@ https://github.com/jieinfo/ygsj-moorgen
 4. 断开并恢复局域网连接，确认“主机连接”会变为离线后自动恢复在线。
 5. 与手机 App 并行操作一天，确认 App 操作会同步到 HA，且不出现反向误控。
 
-安全项默认值：`require_protocol_verification: true`、`controller_silence_timeout: 90`、
+安全项默认值：`require_protocol_verification: true`、`controller_silence_timeout: 300`、
 `command_confirmation_timeout: 8`。不建议在生产环境关闭协议校验或缩短静默超时。
 
 ## 独立运行
@@ -78,7 +78,7 @@ python3 bridge.py --config config.yaml --debug
 ## 可靠性与诊断
 
 - Mosquitto 短暂重启后，Bridge 会独立自动重连 MQTT 并重新发布设备状态。
-- MC7021 读线程停止、TCP 断开或连续 90 秒无任何主机流量时，Bridge 会退出本轮
+- MC7021 读线程停止、TCP 断开或连续 300 秒无任何主机流量时，Bridge 会退出本轮
   会话；附加组件入口会在 15 秒后建立新会话。
 - 子面板默认 900 秒未上报会在 HA 标记为不可用；可通过
   `thermostat_offline_after` 调整，设为 `0` 可关闭该检测。
