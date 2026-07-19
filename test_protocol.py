@@ -8,6 +8,7 @@ from bridge import (
     COMMAND_POWER_ON,
     COMMAND_SCENE,
     COMMAND_WINTER_HUMIDIFIER,
+    decode_thermostat_status,
     decode_tech_system_status,
     MODE_VALUES,
     SCENE_VALUES,
@@ -61,6 +62,23 @@ class ProtocolTests(unittest.TestCase):
             decode_tech_system_status(body),
             {"power": "ON", "mode": "heat", "scene": "home", "winter_humidifier": "ON"},
         )
+
+    def test_captured_child_thermostat_status(self):
+        body = bytes.fromhex(
+            "1b00010003110001000104000800ff00ffffffff01ff6000010001"
+            "98000100219c00010000720001000086000100015f000100010102"
+            "01000275000800ff00ffffffff00ff310002001d5830000500723131"
+            "303006000c00e6b8a9e68ea7e99da2e69dbf0b000100010a000500"
+            "3823014300"
+        )
+        thermostat = decode_thermostat_status(body)
+        self.assertIsNotNone(thermostat)
+        self.assertEqual(thermostat.mac.hex(), "ff00ffffffff01ff")
+        self.assertEqual(thermostat.room_id, "r1100")
+        self.assertEqual(thermostat.target_temperature, 28)
+        self.assertEqual(thermostat.current_temperature, 17.5)
+        self.assertEqual(thermostat.power, "heat")
+        self.assertEqual(thermostat.humidity, 67)
 
     def test_tech_system_interlocks(self):
         state = TechSystemState()
