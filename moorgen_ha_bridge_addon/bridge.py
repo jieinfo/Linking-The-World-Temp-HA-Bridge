@@ -31,6 +31,7 @@ VERSION = 1
 TRAILER = b"#"
 TECH_SYSTEM_MAC = bytes.fromhex("ff00ffffffff00ff")
 DEFAULT_CLIENT_ID = "ff9549d5891998e5"
+DEFAULT_THERMOSTAT_OFFLINE_AFTER = 900.0
 
 # A valid RSA public key is required by the observed first YAS HCP hello. The
 # host did not encrypt subsequent App traffic in the supplied capture, so a
@@ -141,6 +142,28 @@ class ThermostatState:
     current_temperature: float
     power: str
     humidity: int
+    last_seen: float = 0.0
+    available: bool = True
+
+
+def parse_device_mac(value: str) -> bytes:
+    """Parse the eight-byte virtual-device MAC used by the local protocol."""
+    normalized = value.replace(":", "").replace("-", "").strip()
+    try:
+        mac = bytes.fromhex(normalized)
+    except ValueError as error:
+        raise ValueError("tech_system_mac must be 16 hexadecimal characters") from error
+    if len(mac) != 8:
+        raise ValueError("tech_system_mac must be 16 hexadecimal characters")
+    return mac
+
+
+def decode_text(value: bytes) -> str:
+    """Use the controller's UTF-8 text when present, with a GB18030 fallback."""
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return value.decode("gb18030", errors="replace")
 
 
 def tlv(tag: int, value: bytes) -> bytes:
@@ -164,10 +187,10 @@ def parse_tlvs(data: bytes) -> dict[int, bytes]:
     return output
 
 
-def decode_tech_system_status(body: bytes) -> dict[str, str]:
+def decode_tech_system_status(body: bytes, tech_system_mac: bytes = TECH_SYSTEM_MAC) -> dict[str, str]:
     """Return the verified fields from an MC7021 technology-system status event."""
     fields = parse_tlvs(body)
-    if fields.get(0x0004) != TECH_SYSTEM_MAC:
+    if fields.get(0x0004) != tech_system_mac:
         return {}
 
     state: dict[str, str] = {}
@@ -189,7 +212,7 @@ def decode_tech_system_status(body: bytes) -> dict[str, str]:
     return state
 
 
-def decode_thermostat_status(body: bytes) -> ThermostatState | None:
+def decode_thermostat_status(body: bytes, tech_system_mac: bytes = TECH_SYSTEM_MAC) -> ThermostatState | None:
     """Decode a child thermostat report verified against the supplied App PCAP."""
     fields = parse_tlvs(body)
     mac = fields.get(0x0004)
@@ -197,12 +220,12 @@ def decode_thermostat_status(body: bytes) -> ThermostatState | None:
     power = fields.get(0x000B)
     if (
         not mac
-        or fields.get(0x0075) != TECH_SYSTEM_MAC
+        or fields.get(0x0075) != tech_system_mac
         or len(packed or b"") != 5
         or not power
     ):
         return None
-    room_id = fields.get(0x0030, b"").decode("utf-8", errors="replace")
+    room_id = decode_text(fields.get(0x0030, b""))
     return ThermostatState(
         mac=mac,
         room_id=room_id,
@@ -362,6 +385,7 @@ class Bridge:
         )
         self.client.on_status = self._status_received
         self.client.on_frame = self._frame_received
+        self.tech_system_mac = parse_device_mac(host.get("tech_system_mac", TECH_SYSTEM_MAC.hex()))
         mqtt_config = config["mqtt"]
         self.topic_prefix = mqtt_config.get("topic_prefix", "moorgen/tech_system")
         self.discovery_prefix = mqtt_config.get("discovery_prefix", "homeassistant")
@@ -375,12 +399,28 @@ class Bridge:
         self.mqtt.reconnect_delay_set(min_delay=1, max_delay=30)
         self.mqtt_config = mqtt_config
         self._stop = threading.Event()
+        safety = config.get("safety", {})
+        self.allow_control = bool(safety.get("allow_control", True))
+        self.command_min_interval = float(safety.get("command_min_interval", 0.5))
+        self.thermostat_offline_after = float(
+            safety.get("thermostat_offline_after", DEFAULT_THERMOSTAT_OFFLINE_AFTER)
+        )
+        if self.command_min_interval < 0 or self.thermostat_offline_after < 0:
+            raise ValueError("safety intervals cannot be negative")
+        self._command_lock = threading.Lock()
+        self._last_command_at: float | None = None
         # State starts unknown because the controller's packed 14-byte status
         # report is not fully mapped. Send an OFF command once after startup to
         # establish the safe state needed for mode changes.
         self.state = TechSystemState()
         self.room_names: dict[str, str] = {}
         self.thermostats: dict[str, ThermostatState] = {}
+        LOG.info(
+            "Bridge configured for tech_system_mac=%s, controls=%s, thermostat timeout=%ss",
+            self.tech_system_mac.hex(),
+            "enabled" if self.allow_control else "read-only",
+            self.thermostat_offline_after,
+        )
 
     def run(self) -> None:
         self.client.connect()
@@ -390,11 +430,15 @@ class Bridge:
         self.mqtt.connect_async(self.mqtt_config["host"], int(self.mqtt_config.get("port", 1883)), 60)
         self.mqtt.loop_start()
         heartbeat_at = 0.0
+        availability_at = 0.0
         try:
             while not self._stop.wait(1):
                 if time.monotonic() >= heartbeat_at:
                     self.client.heartbeat()
                     heartbeat_at = time.monotonic() + 15
+                if time.monotonic() >= availability_at:
+                    self._refresh_thermostat_availability()
+                    availability_at = time.monotonic() + 15
         finally:
             self.mqtt.loop_stop()
             self.mqtt.disconnect()
@@ -434,31 +478,44 @@ class Bridge:
                 return
             suffix = relative_topic.removesuffix("/set")
             if suffix == "power":
-                self.client.send_command(COMMAND_POWER_ON if value == "on" else COMMAND_POWER_OFF)
+                self._send_host_command(COMMAND_POWER_ON if value == "on" else COMMAND_POWER_OFF)
                 self.state.power = "ON" if value == "on" else "OFF"
                 self._publish_state("power", self.state.power)
                 self._refresh_conditional_entities()
             elif suffix == "mode":
                 if not self.state.can_change_mode:
                     raise RuntimeError("mode changes are only allowed while the tech system is off")
-                self.client.send_command(COMMAND_MODE, MODE_VALUES[value])
+                self._send_host_command(COMMAND_MODE, MODE_VALUES[value])
                 self.state.mode = value
                 self._publish_state("mode", value)
                 self._refresh_conditional_entities()
             elif suffix == "scene":
-                self.client.send_command(COMMAND_SCENE, SCENE_VALUES[value])
+                self._send_host_command(COMMAND_SCENE, SCENE_VALUES[value])
                 self.state.scene = value
                 self._publish_state("scene", value)
             elif suffix == "winter_humidifier":
                 if not self.state.show_winter_humidifier:
                     raise RuntimeError("winter humidifier is only available in heat mode")
-                self.client.send_command(COMMAND_WINTER_HUMIDIFIER, 1 if value == "on" else 0)
+                self._send_host_command(COMMAND_WINTER_HUMIDIFIER, 1 if value == "on" else 0)
                 self.state.winter_humidifier = "ON" if value == "on" else "OFF"
                 self._publish_state("winter_humidifier", self.state.winter_humidifier)
             else:
                 LOG.warning("ignored MQTT command topic: %s", message.topic)
         except (KeyError, RuntimeError, OSError) as error:
             LOG.error("command %s=%s failed: %s", suffix, value, error)
+
+    def _send_host_command(self, command: int, value: int | None = None) -> None:
+        self._send_command_to(self.tech_system_mac, command, value)
+
+    def _send_command_to(self, mac: bytes, command: int, value: int | None = None) -> None:
+        if not self.allow_control:
+            raise RuntimeError("Bridge is in read-only mode; set safety.allow_control to true to enable commands")
+        with self._command_lock:
+            elapsed = None if self._last_command_at is None else time.monotonic() - self._last_command_at
+            if elapsed is not None and elapsed < self.command_min_interval:
+                raise RuntimeError("commands are rate-limited; wait briefly before retrying")
+            self.client.send_command_to(mac, command, value)
+            self._last_command_at = time.monotonic()
 
     def _thermostat_command(self, mac_hex: str, setting: str, value: str) -> None:
         thermostat = self.thermostats.get(mac_hex)
@@ -469,7 +526,7 @@ class Bridge:
             raw_value = round(temperature * 2)
             if not 10 <= raw_value <= 80:
                 raise RuntimeError("temperature must be between 5 and 40 degrees")
-            self.client.send_command_to(thermostat.mac, COMMAND_MODE, raw_value)
+            self._send_command_to(thermostat.mac, COMMAND_MODE, raw_value)
             thermostat.target_temperature = raw_value / 2
         elif setting in ("power", "mode"):
             if setting == "mode" and value not in ("off", self._thermostat_active_hvac_mode()):
@@ -477,7 +534,7 @@ class Bridge:
             if setting == "power" and value not in ("off", "on"):
                 raise RuntimeError(f"unsupported thermostat power state: {value}")
             enabled = value != "off"
-            self.client.send_command_to(
+            self._send_command_to(
                 thermostat.mac,
                 COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
             )
@@ -493,9 +550,9 @@ class Bridge:
         changed = False
         for tag, value in iter_tlvs(frame.body):
             if tag == 0x0030:
-                room_id = value.decode("utf-8", errors="replace")
+                room_id = decode_text(value)
             elif tag == 0x0036 and room_id:
-                name = value.decode("utf-8", errors="replace")
+                name = decode_text(value)
                 if self.room_names.get(room_id) != name:
                     self.room_names[room_id] = name
                     changed = True
@@ -506,7 +563,7 @@ class Bridge:
     def _status_received(self, body: bytes) -> None:
         payload = json.dumps({"raw": body.hex()}, separators=(",", ":"))
         self.mqtt.publish(f"{self.topic_prefix}/status_raw", payload, retain=False)
-        state = decode_tech_system_status(body)
+        state = decode_tech_system_status(body, self.tech_system_mac)
         if state:
             for name, value in state.items():
                 setattr(self.state, name, value)
@@ -514,8 +571,9 @@ class Bridge:
             self._refresh_conditional_entities()
             self._refresh_thermostat_climate_modes()
 
-        thermostat = decode_thermostat_status(body)
+        thermostat = decode_thermostat_status(body, self.tech_system_mac)
         if thermostat:
+            thermostat.last_seen = time.monotonic()
             self.thermostats[thermostat.mac.hex()] = thermostat
             self._publish_thermostat_discovery(thermostat)
             self._publish_thermostat_state(thermostat)
@@ -540,8 +598,20 @@ class Bridge:
             self._publish_thermostat_discovery(thermostat)
             self._publish_thermostat_state(thermostat)
 
+    def _refresh_thermostat_availability(self) -> None:
+        if self.thermostat_offline_after == 0:
+            return
+        now = time.monotonic()
+        for thermostat in self.thermostats.values():
+            if thermostat.available and now - thermostat.last_seen >= self.thermostat_offline_after:
+                thermostat.available = False
+                topic = self._thermostat_topic(thermostat)
+                self.mqtt.publish(f"{topic}/availability", "offline", retain=True)
+                LOG.warning("thermostat %s has stopped reporting; marked unavailable", thermostat.mac.hex())
+
     def _publish_thermostat_state(self, thermostat: ThermostatState) -> None:
         topic = self._thermostat_topic(thermostat)
+        self.mqtt.publish(f"{topic}/availability", "online" if thermostat.available else "offline", retain=True)
         self.mqtt.publish(f"{topic}/power/state", thermostat.power, retain=True)
         self.mqtt.publish(
             f"{topic}/mode/state",
@@ -561,6 +631,9 @@ class Bridge:
         self._discovery("climate", f"thermostat_{mac_hex}", {
             "name": "温控器",
             "unique_id": f"moorgen_thermostat_{mac_hex}",
+            "availability_topic": f"{topic}/availability",
+            "payload_available": "online",
+            "payload_not_available": "offline",
             "mode_command_topic": f"{topic}/mode/set",
             "mode_state_topic": f"{topic}/mode/state",
             "modes": ["off", self._thermostat_active_hvac_mode()],
