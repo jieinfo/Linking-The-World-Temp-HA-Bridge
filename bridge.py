@@ -369,8 +369,10 @@ class Bridge:
         if mqtt_config.get("username"):
             self.mqtt.username_pw_set(mqtt_config["username"], mqtt_config.get("password"))
         self.mqtt.on_connect = self._mqtt_connected
+        self.mqtt.on_connect_fail = self._mqtt_connect_failed
         self.mqtt.on_message = self._mqtt_message
         self.mqtt.on_disconnect = self._mqtt_disconnected
+        self.mqtt.reconnect_delay_set(min_delay=1, max_delay=30)
         self.mqtt_config = mqtt_config
         self._stop = threading.Event()
         # State starts unknown because the controller's packed 14-byte status
@@ -382,7 +384,10 @@ class Bridge:
 
     def run(self) -> None:
         self.client.connect()
-        self.mqtt.connect(self.mqtt_config["host"], int(self.mqtt_config.get("port", 1883)), 60)
+        # MQTT is an independent dependency. connect_async plus loop_start
+        # keeps the MC7021 session alive while the broker is unavailable and
+        # lets Paho reconnect automatically when it returns.
+        self.mqtt.connect_async(self.mqtt_config["host"], int(self.mqtt_config.get("port", 1883)), 60)
         self.mqtt.loop_start()
         heartbeat_at = 0.0
         try:
@@ -397,7 +402,8 @@ class Bridge:
 
     def _mqtt_connected(self, client, userdata, flags, reason_code, properties) -> None:
         if reason_code.is_failure:
-            raise RuntimeError(f"MQTT connection failed: {reason_code}")
+            LOG.error("MQTT broker rejected the connection: %s", reason_code)
+            return
         client.subscribe(f"{self.topic_prefix}/#")
         self._publish_discovery()
         for thermostat in self.thermostats.values():
@@ -406,8 +412,12 @@ class Bridge:
         client.publish(f"{self.topic_prefix}/availability", "online", retain=True)
         LOG.info("connected to MQTT broker")
 
+    def _mqtt_connect_failed(self, client, userdata) -> None:
+        LOG.warning("MQTT connection failed; retrying automatically")
+
     def _mqtt_disconnected(self, client, userdata, disconnect_flags, reason_code, properties) -> None:
-        LOG.warning("MQTT disconnected: %s", reason_code)
+        if not self._stop.is_set():
+            LOG.warning("MQTT disconnected: %s; reconnecting automatically", reason_code)
 
     def _mqtt_message(self, client, userdata, message) -> None:
         value = message.payload.decode("utf-8").strip().lower()
