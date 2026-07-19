@@ -8,6 +8,7 @@ from bridge import (
     COMMAND_POWER_ON,
     COMMAND_SCENE,
     COMMAND_WINTER_HUMIDIFIER,
+    decode_tech_system_status,
     MODE_VALUES,
     SCENE_VALUES,
     TECH_SYSTEM_MAC,
@@ -47,6 +48,19 @@ class ProtocolTests(unittest.TestCase):
         body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
         body += bytes.fromhex("13021000") + DEFAULT_CLIENT_ID.encode("ascii")
         self.assertEqual(len(body), 295)
+
+    def test_captured_technology_system_status(self):
+        body = bytes.fromhex(
+            "1b00010003110001000104000800ff00ffffffff00ff6000010001"
+            "98000100219c00010000720001000086000100015f000100000102"
+            "01000275000800ff00ffffffff00ff310002002058300005007230"
+            "31303006000c00e4b889e68192e680bbe68ea70b000100010a000e"
+            "000201010035014100a000ee010000"
+        )
+        self.assertEqual(
+            decode_tech_system_status(body),
+            {"power": "ON", "mode": "heat", "scene": "home", "winter_humidifier": "ON"},
+        )
 
     def test_tech_system_interlocks(self):
         state = TechSystemState()

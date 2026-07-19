@@ -51,6 +51,8 @@ COMMAND_WINTER_HUMIDIFIER = 5
 
 MODE_VALUES = {"cool": 1, "heat": 2, "ventilation": 3, "dehumidify": 4}
 SCENE_VALUES = {"away": 0, "home": 1}
+MODE_NAMES = {value: name for name, value in MODE_VALUES.items()}
+SCENE_NAMES = {value: name for name, value in SCENE_VALUES.items()}
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,45 @@ class TechSystemState:
 
 def tlv(tag: int, value: bytes) -> bytes:
     return struct.pack("<HH", tag, len(value)) + value
+
+
+def parse_tlvs(data: bytes) -> dict[int, bytes]:
+    """Parse the flat little-endian tag/length/value records used by status events."""
+    output: dict[int, bytes] = {}
+    offset = 0
+    while offset + 4 <= len(data):
+        tag, length = struct.unpack_from("<HH", data, offset)
+        offset += 4
+        if offset + length > len(data):
+            break
+        output[tag] = data[offset : offset + length]
+        offset += length
+    return output
+
+
+def decode_tech_system_status(body: bytes) -> dict[str, str]:
+    """Return the verified fields from an MC7021 technology-system status event."""
+    fields = parse_tlvs(body)
+    if fields.get(0x0004) != TECH_SYSTEM_MAC:
+        return {}
+
+    state: dict[str, str] = {}
+    power = fields.get(0x000B)
+    if power:
+        state["power"] = "ON" if power[0] else "OFF"
+
+    packed = fields.get(0x000A)
+    if packed:
+        mode = MODE_NAMES.get(packed[0])
+        if mode:
+            state["mode"] = mode
+        if len(packed) > 1:
+            scene = SCENE_NAMES.get(packed[1])
+            if scene:
+                state["scene"] = scene
+        if len(packed) > 2:
+            state["winter_humidifier"] = "ON" if packed[2] else "OFF"
+    return state
 
 
 class MoorgenClient:
@@ -343,10 +384,15 @@ class Bridge:
             LOG.error("command %s=%s failed: %s", suffix, value, error)
 
     def _status_received(self, body: bytes) -> None:
-        # Preserve every raw host report. The captured 14-byte controller status
-        # has not been fully field-mapped yet, so this avoids publishing guesses.
         payload = json.dumps({"raw": body.hex()}, separators=(",", ":"))
         self.mqtt.publish(f"{self.topic_prefix}/status_raw", payload, retain=False)
+        state = decode_tech_system_status(body)
+        if not state:
+            return
+        for name, value in state.items():
+            setattr(self.state, name, value)
+            self._publish_state(name, value)
+        self._refresh_conditional_entities()
 
     def _publish_state(self, name: str, value: str) -> None:
         self.mqtt.publish(f"{self.topic_prefix}/{name}/state", value, retain=True)
