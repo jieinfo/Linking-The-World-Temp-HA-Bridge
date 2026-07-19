@@ -455,14 +455,15 @@ class Bridge:
                 raise RuntimeError("temperature must be between 5 and 40 degrees")
             self.client.send_command_to(thermostat.mac, COMMAND_MODE, raw_value)
             thermostat.target_temperature = raw_value / 2
-        elif setting == "power":
-            if value not in ("off", "on"):
+        elif setting in ("power", "mode"):
+            if value not in ("off", "on", "heat"):
                 raise RuntimeError(f"unsupported thermostat power state: {value}")
+            enabled = value in ("on", "heat")
             self.client.send_command_to(
                 thermostat.mac,
-                COMMAND_POWER_ON if value == "on" else COMMAND_POWER_OFF,
+                COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
             )
-            thermostat.power = value.upper()
+            thermostat.power = "ON" if enabled else "OFF"
         else:
             raise RuntimeError(f"unsupported thermostat setting: {setting}")
         self._publish_thermostat_state(thermostat)
@@ -513,6 +514,11 @@ class Bridge:
     def _publish_thermostat_state(self, thermostat: ThermostatState) -> None:
         topic = self._thermostat_topic(thermostat)
         self.mqtt.publish(f"{topic}/power/state", thermostat.power, retain=True)
+        self.mqtt.publish(
+            f"{topic}/mode/state",
+            "heat" if thermostat.power == "ON" else "off",
+            retain=True,
+        )
         self.mqtt.publish(f"{topic}/temperature/state", f"{thermostat.target_temperature:g}", retain=True)
         self.mqtt.publish(f"{topic}/current_temperature", f"{thermostat.current_temperature:g}", retain=True)
         self.mqtt.publish(f"{topic}/humidity", str(thermostat.humidity), retain=True)
@@ -521,52 +527,37 @@ class Bridge:
         mac_hex = thermostat.mac.hex()
         topic = self._thermostat_topic(thermostat)
         device = {"identifiers": [f"moorgen_thermostat_{mac_hex}"], "name": self._thermostat_name(thermostat)}
-        # Remove the climate entity from v0.1.7: the physical panel exposes an
-        # enable switch, not a heating/cooling HVAC mode.
-        self.mqtt.publish(
-            f"{self.discovery_prefix}/climate/moorgen_tech_system/thermostat_{mac_hex}/config",
-            b"",
-            retain=True,
-        )
-        self._discovery("switch", f"thermostat_{mac_hex}_power", {
-            "name": "开启",
-            "unique_id": f"moorgen_thermostat_{mac_hex}_power",
-            "command_topic": f"{topic}/power/set",
-            "state_topic": f"{topic}/power/state",
-            "payload_on": "ON",
-            "payload_off": "OFF",
+        # The panel has only enable/disable, but Climate provides the compact
+        # thermostat card the user expects. Map Climate's heat/off modes to it.
+        self._discovery("climate", f"thermostat_{mac_hex}", {
+            "name": "温控器",
+            "unique_id": f"moorgen_thermostat_{mac_hex}",
+            "mode_command_topic": f"{topic}/mode/set",
+            "mode_state_topic": f"{topic}/mode/state",
+            "modes": ["off", "heat"],
+            "temperature_command_topic": f"{topic}/temperature/set",
+            "temperature_state_topic": f"{topic}/temperature/state",
+            "current_temperature_topic": f"{topic}/current_temperature",
+            "current_humidity_topic": f"{topic}/humidity",
+            "min_temp": 5,
+            "max_temp": 40,
+            "temp_step": 0.5,
+            "precision": 0.1,
+            "temperature_unit": "C",
             "device": device,
         })
-        self._discovery("number", f"thermostat_{mac_hex}_target_temperature", {
-            "name": "设定温度",
-            "unique_id": f"moorgen_thermostat_{mac_hex}_target_temperature",
-            "command_topic": f"{topic}/temperature/set",
-            "state_topic": f"{topic}/temperature/state",
-            "min": 5,
-            "max": 40,
-            "step": 0.5,
-            "unit_of_measurement": "°C",
-            "mode": "box",
-            "device": device,
-        })
-        self._discovery("sensor", f"thermostat_{mac_hex}_temperature", {
-            "name": "当前温度",
-            "unique_id": f"moorgen_thermostat_{mac_hex}_temperature",
-            "state_topic": f"{topic}/current_temperature",
-            "unit_of_measurement": "°C",
-            "device_class": "temperature",
-            "state_class": "measurement",
-            "device": device,
-        })
-        self._discovery("sensor", f"thermostat_{mac_hex}_humidity", {
-            "name": "湿度",
-            "unique_id": f"moorgen_thermostat_{mac_hex}_humidity",
-            "state_topic": f"{topic}/humidity",
-            "unit_of_measurement": "%",
-            "device_class": "humidity",
-            "state_class": "measurement",
-            "device": device,
-        })
+        # Remove the short-lived split controls introduced in v0.1.8.
+        for component, object_id in (
+            ("switch", f"thermostat_{mac_hex}_power"),
+            ("number", f"thermostat_{mac_hex}_target_temperature"),
+            ("sensor", f"thermostat_{mac_hex}_temperature"),
+            ("sensor", f"thermostat_{mac_hex}_humidity"),
+        ):
+            self.mqtt.publish(
+                f"{self.discovery_prefix}/{component}/moorgen_tech_system/{object_id}/config",
+                b"",
+                retain=True,
+            )
 
     def _publish_discovery(self) -> None:
         common = {
