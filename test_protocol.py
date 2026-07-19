@@ -8,6 +8,7 @@ from bridge import (
     COMMAND_POWER_ON,
     COMMAND_SCENE,
     COMMAND_WINTER_HUMIDIFIER,
+    CLIMATE_MODE_FOR_SYSTEM_MODE,
     decode_thermostat_status,
     decode_tech_system_status,
     MODE_VALUES,
@@ -44,6 +45,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(SCENE_VALUES["away"], 0)
         self.assertEqual(COMMAND_SCENE, 4)
         self.assertEqual(COMMAND_WINTER_HUMIDIFIER, 5)
+
+    def test_child_climate_modes_follow_the_technology_system(self):
+        self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["cool"], "cool")
+        self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["heat"], "heat")
+        self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["ventilation"], "fan_only")
+        self.assertEqual(CLIMATE_MODE_FOR_SYSTEM_MODE["dehumidify"], "dry")
 
     def test_captured_hello_body_length(self):
         body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
