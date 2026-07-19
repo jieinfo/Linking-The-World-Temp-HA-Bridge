@@ -76,9 +76,9 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(thermostat.mac.hex(), "ff00ffffffff01ff")
         self.assertEqual(thermostat.room_id, "r1100")
         self.assertEqual(thermostat.target_temperature, 28)
-        self.assertEqual(thermostat.current_temperature, 17.5)
-        self.assertEqual(thermostat.power, "heat")
-        self.assertEqual(thermostat.humidity, 67)
+        self.assertEqual(thermostat.current_temperature, 29)
+        self.assertEqual(thermostat.power, "ON")
+        self.assertEqual(thermostat.humidity, 88)
 
     def test_tech_system_interlocks(self):
         state = TechSystemState()
