@@ -136,6 +136,44 @@ class ProtocolTests(unittest.TestCase):
             [(call.args[0], call.args[1]) for call in bridge.mqtt.publish.call_args_list],
         )
 
+    def test_connection_diagnostics_are_not_hidden_by_global_availability(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        bridge.mqtt.publish = MagicMock()
+        bridge._publish_discovery()
+
+        connection_topic = "homeassistant/binary_sensor/moorgen_tech_system/bridge_connection/config"
+        error_topic = "homeassistant/sensor/moorgen_tech_system/bridge_connection_error/config"
+        connection_payload = next(
+            json.loads(call.args[1])
+            for call in bridge.mqtt.publish.call_args_list
+            if call.args[0] == connection_topic
+        )
+        error_payload = next(
+            json.loads(call.args[1])
+            for call in bridge.mqtt.publish.call_args_list
+            if call.args[0] == error_topic
+        )
+        self.assertNotIn("availability_topic", connection_payload)
+        self.assertNotIn("availability_topic", error_payload)
+
+    def test_connection_error_diagnostics_describe_login_failures(self):
+        self.assertEqual(
+            Bridge._describe_connection_error(TimeoutError()),
+            "主机登录超时，请检查账号、密码和主机状态",
+        )
+        self.assertEqual(
+            Bridge._describe_connection_error(ConnectionError()),
+            "主机连接已断开或无响应",
+        )
+        self.assertEqual(
+            Bridge._describe_connection_error(OSError()),
+            "无法连接主机，请检查地址、端口和网络",
+        )
+
     def test_configurable_total_control_mac_and_text_fallback(self):
         custom_mac = bytes.fromhex("0102030405060708")
         body = tlv(0x0004, custom_mac) + tlv(0x000B, b"\x01") + tlv(0x000A, b"\x02")

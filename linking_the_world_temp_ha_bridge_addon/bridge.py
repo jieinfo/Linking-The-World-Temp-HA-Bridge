@@ -488,6 +488,7 @@ class Bridge:
         self.protocol_verified = False
         self.pending_commands: dict[str, PendingCommand] = {}
         self.last_command_status = "idle"
+        self.last_connection_error = "正在连接主机"
         self._thermostat_discovery_fingerprints: dict[str, tuple[str, str]] = {}
         self._mode_discovery_options: tuple[str, ...] | None = None
         LOG.info(
@@ -499,7 +500,6 @@ class Bridge:
         )
 
     def run(self) -> None:
-        self.client.connect()
         # MQTT is an independent dependency. connect_async plus loop_start
         # keeps the MC7021 session alive while the broker is unavailable and
         # lets Paho reconnect automatically when it returns.
@@ -508,6 +508,12 @@ class Bridge:
         heartbeat_at = 0.0
         availability_at = 0.0
         try:
+            self._publish_bridge_connection("offline")
+            self._set_connection_error("正在连接主机")
+            self.mqtt.publish(f"{self.topic_prefix}/availability", "offline", retain=True)
+            self.client.connect()
+            if not self.protocol_verified:
+                self._set_connection_error("等待主机状态验证")
             while not self._stop.wait(1):
                 self._assert_controller_healthy()
                 self._expire_pending_commands()
@@ -517,12 +523,25 @@ class Bridge:
                 if time.monotonic() >= availability_at:
                     self._refresh_thermostat_availability()
                     availability_at = time.monotonic() + 15
+        except (ConnectionError, OSError, TimeoutError) as error:
+            self._publish_bridge_connection("offline")
+            self._set_connection_error(self._describe_connection_error(error))
+            self.mqtt.publish(f"{self.topic_prefix}/availability", "offline", retain=True)
+            raise
         finally:
             self._publish_bridge_connection("offline")
             self.mqtt.publish(f"{self.topic_prefix}/availability", "offline", retain=True)
             self.mqtt.loop_stop()
             self.mqtt.disconnect()
             self.client.close()
+
+    @staticmethod
+    def _describe_connection_error(error: Exception) -> str:
+        if isinstance(error, TimeoutError):
+            return "主机登录超时，请检查账号、密码和主机状态"
+        if isinstance(error, ConnectionError):
+            return "主机连接已断开或无响应"
+        return "无法连接主机，请检查地址、端口和网络"
 
     def _mqtt_connected(self, client, userdata, flags, reason_code, properties) -> None:
         if reason_code.is_failure:
@@ -734,6 +753,7 @@ class Bridge:
         state = decode_tech_system_status(body, self.tech_system_mac)
         if state:
             self.protocol_verified = True
+            self._set_connection_error("无")
             for name, value in state.items():
                 setattr(self.state, name, value)
                 self._publish_state(name, value)
@@ -811,8 +831,17 @@ class Bridge:
     def _publish_bridge_connection(self, value: str) -> None:
         self.mqtt.publish(f"{self.topic_prefix}/bridge/connection/state", value, retain=True)
 
+    def _set_connection_error(self, value: str) -> None:
+        self.last_connection_error = value
+        self.mqtt.publish(f"{self.topic_prefix}/bridge/connection_error/state", value, retain=True)
+
     def _publish_bridge_diagnostics(self) -> None:
         self._publish_bridge_connection("online" if self.protocol_verified and self.client.is_ready else "offline")
+        self.mqtt.publish(
+            f"{self.topic_prefix}/bridge/connection_error/state",
+            self.last_connection_error,
+            retain=True,
+        )
         self.mqtt.publish(f"{self.topic_prefix}/bridge/last_command/state", self.last_command_status, retain=True)
         self.mqtt.publish(f"{self.topic_prefix}/bridge/panel_count/state", str(len(self.thermostats)), retain=True)
 
@@ -935,13 +964,20 @@ class Bridge:
             "options": list(SCENE_LABELS.values()),
         })
         self._discovery("binary_sensor", "bridge_connection", {
-            **common,
             "name": "主机连接",
             "unique_id": "moorgen_tech_system_bridge_connection",
             "state_topic": f"{self.topic_prefix}/bridge/connection/state",
             "payload_on": "online",
             "payload_off": "offline",
             "device_class": "connectivity",
+            "device": common["device"],
+        })
+        self._discovery("sensor", "bridge_connection_error", {
+            "name": "最近连接错误",
+            "unique_id": "moorgen_tech_system_bridge_connection_error",
+            "state_topic": f"{self.topic_prefix}/bridge/connection_error/state",
+            "icon": "mdi:lan-disconnect",
+            "device": common["device"],
         })
         self._discovery("sensor", "bridge_last_command", {
             **common,
