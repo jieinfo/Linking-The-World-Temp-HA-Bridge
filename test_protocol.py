@@ -1,6 +1,7 @@
 import struct
 import time
 import unittest
+import json
 from unittest.mock import MagicMock
 
 from bridge import (
@@ -73,6 +74,44 @@ class ProtocolTests(unittest.TestCase):
         bridge._publish_state("scene", "home")
         self.assertEqual(bridge.mqtt.publish.call_args_list[0].args[1], "除湿")
         self.assertEqual(bridge.mqtt.publish.call_args_list[1].args[1], "居家")
+
+    def test_mode_select_stays_available_and_explains_when_locked(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        bridge.mqtt.publish = MagicMock()
+        bridge.state.power = "ON"
+        bridge.state.mode = "cool"
+        bridge._publish_discovery()
+
+        mode_topic = "homeassistant/select/moorgen_tech_system/mode/config"
+        mode_payload = next(
+            json.loads(call.args[1])
+            for call in bridge.mqtt.publish.call_args_list
+            if call.args[0] == mode_topic
+        )
+        self.assertEqual(mode_payload["availability_topic"], "moorgen/tech_system/availability")
+        self.assertEqual(mode_payload["options"], ["制冷"])
+        self.assertIn(
+            ("moorgen/tech_system/mode_switch_condition/state", "请先关闭科技系统"),
+            [(call.args[0], call.args[1]) for call in bridge.mqtt.publish.call_args_list],
+        )
+
+        bridge.mqtt.publish.reset_mock()
+        bridge.state.power = "OFF"
+        bridge._refresh_conditional_entities()
+        mode_payload = next(
+            json.loads(call.args[1])
+            for call in bridge.mqtt.publish.call_args_list
+            if call.args[0] == mode_topic
+        )
+        self.assertEqual(mode_payload["options"], ["制冷", "制热", "通风", "除湿"])
+        self.assertIn(
+            ("moorgen/tech_system/mode_switch_condition/state", "可以切换模式"),
+            [(call.args[0], call.args[1]) for call in bridge.mqtt.publish.call_args_list],
+        )
 
     def test_configurable_total_control_mac_and_text_fallback(self):
         custom_mac = bytes.fromhex("0102030405060708")
