@@ -30,7 +30,7 @@
 在 Home Assistant 的“设置 → 附加组件 → 附加组件商店”添加本仓库：
 
 ```text
-https://github.com/jieinfo/ygsj-moorgen
+https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
 ```
 
 安装 **Linking The World Temp Bridge**，填写主机局域网地址、本地主机账号和 MQTT
