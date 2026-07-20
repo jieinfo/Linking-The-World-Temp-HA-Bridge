@@ -49,6 +49,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(decoder.feed(source[:7]), [])
         self.assertEqual(decoder.feed(source[7:]), [YasHcpFrame(5, 0x0C, 19, b"status")])
 
+    def test_yashcp_decoder_recovers_after_an_excessive_declared_length(self):
+        source = YasHcpFrame(5, 0x0C, 20, b"status").encode()
+        decoder = YasHcpDecoder()
+        # A false header may have the right magic but an impossible length.
+        # The following valid status frame must not remain blocked behind it.
+        decoded = decoder.feed(b"#\xff\xffdooyashcp" + source)
+        self.assertEqual(decoded, [YasHcpFrame(5, 0x0C, 20, b"status")])
+
     def test_captured_wire_envelope(self):
         frame = YasHcpFrame(1, 3, 0, b"x").encode()
         self.assertEqual(frame, b"#\x12\x00dooyashcp\x01\x01\x03\x00\x00\x01\x00x#")

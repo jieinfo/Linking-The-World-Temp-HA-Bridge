@@ -36,6 +36,7 @@ DEFAULT_CONTROLLER_SILENCE_TIMEOUT = 300.0
 DEFAULT_COMMAND_CONFIRMATION_TIMEOUT = 8.0
 THERMOSTAT_MIN_TEMPERATURE = 16
 THERMOSTAT_MAX_TEMPERATURE = 28
+MAX_YASHCP_PAYLOAD_LENGTH = 16_384
 
 # A valid RSA public key is required by the observed first YAS HCP hello. The
 # host did not encrypt subsequent App traffic in the supplied capture, so a
@@ -113,6 +114,10 @@ class YasHcpDecoder:
             if magic_prefix_length < len(MAGIC):
                 return output
             payload_length = struct.unpack_from("<H", self._buffer, 1)[0]
+            if payload_length > MAX_YASHCP_PAYLOAD_LENGTH:
+                LOG.warning("discarded YAS HCP frame with excessive declared length: %d", payload_length)
+                del self._buffer[0]
+                continue
             frame_length = 3 + payload_length
             if len(self._buffer) < frame_length:
                 return output
@@ -406,9 +411,15 @@ class MoorgenClient:
                 for frame in self._decoder.feed(data):
                     LOG.debug("received kind=%02x opcode=%02x body=%s", frame.kind, frame.opcode, frame.body.hex())
                     if self.on_frame:
-                        self.on_frame(frame)
+                        try:
+                            self.on_frame(frame)
+                        except Exception:
+                            LOG.exception("MC7021 frame handler failed; keeping the reader active")
                     if frame.kind == 5 and frame.opcode == 0x0C and self.on_status:
-                        self.on_status(frame.body)
+                        try:
+                            self.on_status(frame.body)
+                        except Exception:
+                            LOG.exception("MC7021 status handler failed; keeping the reader active")
                     else:
                         self._inbox.put(frame)
         except Exception as error:
@@ -466,6 +477,7 @@ class Bridge:
         ):
             raise ValueError("safety intervals must be non-negative, and controller timeouts must be positive")
         self._command_lock = threading.Lock()
+        self._pending_command_lock = threading.Lock()
         self._last_command_at: float | None = None
         # State starts unknown because the controller's packed 14-byte status
         # report is not fully mapped. Send an OFF command once after startup to
@@ -537,7 +549,14 @@ class Bridge:
             LOG.warning("MQTT disconnected: %s; reconnecting automatically", reason_code)
 
     def _mqtt_message(self, client, userdata, message) -> None:
-        value = message.payload.decode("utf-8").strip().lower()
+        if message.retain:
+            LOG.warning("ignored retained MQTT command topic: %s", message.topic)
+            return
+        try:
+            value = message.payload.decode("utf-8").strip().lower()
+        except UnicodeDecodeError:
+            LOG.warning("ignored non-text MQTT command topic: %s", message.topic)
+            return
         relative_topic = message.topic.removeprefix(f"{self.topic_prefix}/")
         if not relative_topic.endswith("/set"):
             return
@@ -551,6 +570,8 @@ class Bridge:
                 return
             suffix = relative_topic.removesuffix("/set")
             if suffix == "power":
+                if value not in ("on", "off"):
+                    raise RuntimeError(f"unsupported power value: {value}")
                 self._send_and_track_command(
                     "system",
                     "总控开关",
@@ -573,6 +594,8 @@ class Bridge:
             elif suffix == "winter_humidifier":
                 if not self.state.show_winter_humidifier:
                     raise RuntimeError("winter humidifier is only available in heat mode")
+                if value not in ("on", "off"):
+                    raise RuntimeError(f"unsupported winter humidifier value: {value}")
                 self._send_and_track_command(
                     "system",
                     "冬季加湿",
@@ -640,7 +663,8 @@ class Bridge:
             try:
                 self.client.send_command_to(mac, command, value)
             except Exception:
-                self.pending_commands.pop(target, None)
+                with self._pending_command_lock:
+                    self.pending_commands.pop(target, None)
                 self._publish_bridge_diagnostics()
                 raise
             self._last_command_at = time.monotonic()
@@ -748,31 +772,39 @@ class Bridge:
             raise ConnectionError(f"MC7021 has been silent for {silence:.0f} seconds")
 
     def _track_pending_command(self, target: str, label: str, expected: dict[str, str]) -> None:
-        self.pending_commands[target] = PendingCommand(
-            label=label,
-            expected=expected,
-            deadline=time.monotonic() + self.command_confirmation_timeout,
-        )
-        self.last_command_status = f"等待主机确认: {label}"
+        with self._pending_command_lock:
+            self.pending_commands[target] = PendingCommand(
+                label=label,
+                expected=expected,
+                deadline=time.monotonic() + self.command_confirmation_timeout,
+            )
+            self.last_command_status = f"等待主机确认: {label}"
         self._publish_bridge_diagnostics()
         LOG.info("command sent; waiting for MC7021 confirmation: %s", label)
 
     def _confirm_pending_command(self, target: str, actual: dict[str, str | None]) -> None:
-        pending = self.pending_commands.get(target)
-        if not pending:
-            return
-        if all(actual.get(name) == value for name, value in pending.expected.items()):
-            del self.pending_commands[target]
-            self.last_command_status = f"已确认: {pending.label}"
+        confirmed_label: str | None = None
+        with self._pending_command_lock:
+            pending = self.pending_commands.get(target)
+            if pending and all(actual.get(name) == value for name, value in pending.expected.items()):
+                del self.pending_commands[target]
+                confirmed_label = pending.label
+                self.last_command_status = f"已确认: {confirmed_label}"
+        if confirmed_label:
             self._publish_bridge_diagnostics()
-            LOG.info("MC7021 confirmed command: %s", pending.label)
+            LOG.info("MC7021 confirmed command: %s", confirmed_label)
 
     def _expire_pending_commands(self) -> None:
         now = time.monotonic()
-        expired = [target for target, pending in self.pending_commands.items() if now >= pending.deadline]
-        for target in expired:
-            pending = self.pending_commands.pop(target)
-            self.last_command_status = f"确认超时: {pending.label}"
+        with self._pending_command_lock:
+            expired = [
+                self.pending_commands.pop(target)
+                for target, pending in list(self.pending_commands.items())
+                if now >= pending.deadline
+            ]
+            if expired:
+                self.last_command_status = f"确认超时: {expired[-1].label}"
+        for pending in expired:
             self._publish_bridge_diagnostics()
             LOG.error("MC7021 did not confirm command within %.0fs: %s", self.command_confirmation_timeout, pending.label)
 
