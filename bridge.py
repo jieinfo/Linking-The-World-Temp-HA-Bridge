@@ -23,7 +23,7 @@ from typing import Callable
 import paho.mqtt.client as mqtt
 import yaml
 
-LOG = logging.getLogger("moorgen_ha_bridge")
+LOG = logging.getLogger("linking_the_world_temp_ha_bridge")
 # Each YAS HCP payload is carried in the App's ``# + uint16 length`` envelope.
 # The captured wire magic is consequently ``dooyashcp``, followed by one '#'.
 MAGIC = b"dooyashcp"
@@ -420,7 +420,7 @@ class Bridge:
         mqtt_config = config["mqtt"]
         self.topic_prefix = mqtt_config.get("topic_prefix", "moorgen/tech_system")
         self.discovery_prefix = mqtt_config.get("discovery_prefix", "homeassistant")
-        self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=mqtt_config.get("client_id", "moorgen-ha-bridge"))
+        self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=mqtt_config.get("client_id", "linking-the-world-temp-ha-bridge"))
         if mqtt_config.get("username"):
             self.mqtt.username_pw_set(mqtt_config["username"], mqtt_config.get("password"))
         self.mqtt.on_connect = self._mqtt_connected
