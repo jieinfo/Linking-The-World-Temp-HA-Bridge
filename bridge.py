@@ -102,6 +102,16 @@ class YasHcpDecoder:
                 del self._buffer[:start]
             if len(self._buffer) < 3:
                 return output
+            # Each protocol frame ends with '#' and the next one begins with
+            # '#'. After a damaged/truncated read, the trailing delimiter can
+            # otherwise be mistaken for a new frame header and its following
+            # '# + length' makes the decoder wait for an enormous fake frame.
+            magic_prefix_length = min(len(MAGIC), len(self._buffer) - 3)
+            if bytes(self._buffer[3 : 3 + magic_prefix_length]) != MAGIC[:magic_prefix_length]:
+                del self._buffer[0]
+                continue
+            if magic_prefix_length < len(MAGIC):
+                return output
             payload_length = struct.unpack_from("<H", self._buffer, 1)[0]
             frame_length = 3 + payload_length
             if len(self._buffer) < frame_length:
@@ -109,12 +119,12 @@ class YasHcpDecoder:
             raw = bytes(self._buffer[3:frame_length])
             del self._buffer[:frame_length]
             if not raw.startswith(MAGIC) or not raw.endswith(TRAILER) or len(raw) < len(MAGIC) + 8:
-                LOG.warning("discarded malformed YAS HCP payload: %s", raw.hex())
+                LOG.warning("discarded malformed YAS HCP payload (%d bytes): %s", len(raw), raw[:32].hex())
                 continue
             body_length = struct.unpack_from("<H", raw, len(MAGIC) + 5)[0]
             expected_length = len(MAGIC) + 7 + body_length + len(TRAILER)
             if len(raw) != expected_length:
-                LOG.warning("discarded YAS HCP payload with invalid length: %s", raw.hex())
+                LOG.warning("discarded YAS HCP payload with invalid length (%d bytes): %s", len(raw), raw[:32].hex())
                 continue
             output.append(
                 YasHcpFrame(
