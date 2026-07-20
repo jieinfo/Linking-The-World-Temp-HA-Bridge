@@ -63,7 +63,7 @@ https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
 ## 独立运行
 
 ```sh
-cd moorgen_ha_bridge
+cd linking_the_world_temp_ha_bridge
 python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install -r requirements.txt
