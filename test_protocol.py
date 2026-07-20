@@ -131,6 +131,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn(f"thermostat_{thermostat.mac.hex()}", bridge.pending_commands)
         with self.assertRaises(RuntimeError):
             bridge._thermostat_command(thermostat.mac.hex(), "temperature", "21.5")
+        with self.assertRaises(RuntimeError):
+            bridge._thermostat_command(thermostat.mac.hex(), "temperature", "15")
+        with self.assertRaises(RuntimeError):
+            bridge._thermostat_command(thermostat.mac.hex(), "temperature", "29")
 
     def test_protocol_gate_and_confirmation_keep_only_controller_confirmed_state(self):
         config = {
