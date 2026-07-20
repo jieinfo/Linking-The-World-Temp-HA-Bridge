@@ -1,8 +1,8 @@
 name: Linking The World Temp Bridge
-version: 0.2.3
+version: 0.2.4
 slug: moorgen_ha_bridge
 description: Local Home Assistant bridge for Linking The World temperature systems
-url: https://github.com/jieinfo/ygsj-moorgen
+url: https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
 arch:
   - aarch64
   - amd64
