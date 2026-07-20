@@ -27,7 +27,9 @@ jobs:
 
           addon = yaml.safe_load(Path("linking_the_world_temp_ha_bridge_addon/config.yaml").read_text())
           repository = yaml.safe_load(Path("repository.yaml").read_text())
+          changelog = Path("linking_the_world_temp_ha_bridge_addon/CHANGELOG.md").read_text()
           assert addon["slug"] == "linking_the_world_temp_ha_bridge"
           assert addon["version"]
           assert repository["name"]
+          assert f"## {addon['version']}" in changelog
           PY
