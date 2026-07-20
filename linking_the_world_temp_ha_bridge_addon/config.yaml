@@ -1,5 +1,5 @@
 name: Linking The World Temp Bridge
-version: 0.2.6
+version: 0.2.7
 slug: linking_the_world_temp_ha_bridge
 description: Local Home Assistant bridge for Linking The World temperature systems
 url: https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
