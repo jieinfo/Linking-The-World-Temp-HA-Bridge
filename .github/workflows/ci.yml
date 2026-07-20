@@ -16,7 +16,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Check Python syntax
-        run: python -m py_compile bridge.py test_protocol.py moorgen_ha_bridge_addon/bridge.py moorgen_ha_bridge_addon/addon_entrypoint.py
+        run: python -m py_compile bridge.py test_protocol.py linking_the_world_temp_ha_bridge_addon/bridge.py linking_the_world_temp_ha_bridge_addon/addon_entrypoint.py
       - name: Run protocol tests
         run: python -m unittest -v
       - name: Validate add-on metadata
@@ -25,9 +25,9 @@ jobs:
           from pathlib import Path
           import yaml
 
-          addon = yaml.safe_load(Path("moorgen_ha_bridge_addon/config.yaml").read_text())
+          addon = yaml.safe_load(Path("linking_the_world_temp_ha_bridge_addon/config.yaml").read_text())
           repository = yaml.safe_load(Path("repository.yaml").read_text())
-          assert addon["slug"] == "moorgen_ha_bridge"
+          assert addon["slug"] == "linking_the_world_temp_ha_bridge"
           assert addon["version"]
           assert repository["name"]
           PY
