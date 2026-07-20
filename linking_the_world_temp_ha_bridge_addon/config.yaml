@@ -1,5 +1,5 @@
 name: Linking The World Temp Bridge
-version: 0.2.5
+version: 0.2.6
 slug: linking_the_world_temp_ha_bridge
 description: Local Home Assistant bridge for Linking The World temperature systems
 url: https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
@@ -24,7 +24,7 @@ options:
   mqtt_port: 1883
   mqtt_username: ""
   mqtt_password: ""
-  mqtt_client_id: moorgen-ha-bridge
+  mqtt_client_id: linking-the-world-temp-ha-bridge
   mqtt_topic_prefix: moorgen/tech_system
   mqtt_discovery_prefix: homeassistant
   allow_control: true

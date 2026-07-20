@@ -16,7 +16,7 @@ mqtt:
   port: 1883
   username: ""
   password: ""
-  client_id: moorgen-ha-bridge
+  client_id: linking-the-world-temp-ha-bridge
   topic_prefix: moorgen/tech_system
   discovery_prefix: homeassistant
 
