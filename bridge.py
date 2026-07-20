@@ -462,6 +462,7 @@ class Bridge:
         self.pending_commands: dict[str, PendingCommand] = {}
         self.last_command_status = "idle"
         self._thermostat_discovery_fingerprints: dict[str, tuple[str, str]] = {}
+        self._mode_discovery_options: tuple[str, ...] | None = None
         LOG.info(
             "Bridge configured for tech_system_mac=%s, controls=%s, thermostat timeout=%ss, protocol verification=%s",
             self.tech_system_mac.hex(),
@@ -829,15 +830,9 @@ class Bridge:
             "state_topic": f"{self.topic_prefix}/power/state",
             "payload_on": "ON", "payload_off": "OFF",
         })
-        self._discovery("select", "mode", {
-            **common,
-            "name": "科技系统模式",
-            "unique_id": "moorgen_tech_system_mode",
-            "command_topic": f"{self.topic_prefix}/mode/set",
-            "state_topic": f"{self.topic_prefix}/mode/state",
-            "availability_topic": f"{self.topic_prefix}/mode/availability",
-            "options": list(MODE_LABELS.values()),
-        })
+        self._publish_mode_discovery(force=True)
+        # Clear the retained availability state used by older Bridge versions.
+        self.mqtt.publish(f"{self.topic_prefix}/mode/availability", b"", retain=True)
         self._discovery("select", "scene", {
             **common,
             "name": "科技系统场景",
@@ -862,6 +857,13 @@ class Bridge:
             "state_topic": f"{self.topic_prefix}/bridge/last_command/state",
             "icon": "mdi:message-check-outline",
         })
+        self._discovery("sensor", "mode_switch_condition", {
+            **common,
+            "name": "模式切换条件",
+            "unique_id": "moorgen_tech_system_mode_switch_condition",
+            "state_topic": f"{self.topic_prefix}/mode_switch_condition/state",
+            "icon": "mdi:information-outline",
+        })
         self._discovery("sensor", "bridge_panel_count", {
             **common,
             "name": "已发现温控面板",
@@ -873,9 +875,40 @@ class Bridge:
         })
         self._refresh_conditional_entities()
 
+    def _mode_select_options(self) -> tuple[str, ...]:
+        if not self.state.can_change_mode and self.state.mode:
+            return (MODE_LABELS.get(self.state.mode, self.state.mode),)
+        return tuple(MODE_LABELS.values())
+
+    def _mode_switch_condition(self) -> str:
+        if self.state.power == "OFF":
+            return "可以切换模式"
+        if self.state.power == "ON":
+            return "请先关闭科技系统"
+        return "等待科技系统状态"
+
+    def _publish_mode_discovery(self, force: bool = False) -> None:
+        options = self._mode_select_options()
+        if not force and self._mode_discovery_options == options:
+            return
+        self._mode_discovery_options = options
+        self._discovery("select", "mode", {
+            "availability_topic": f"{self.topic_prefix}/availability",
+            "name": "科技系统模式",
+            "unique_id": "moorgen_tech_system_mode",
+            "device": {"identifiers": ["moorgen_mc7021_tech_system"], "name": "科技系统总控"},
+            "command_topic": f"{self.topic_prefix}/mode/set",
+            "state_topic": f"{self.topic_prefix}/mode/state",
+            "options": list(options),
+        })
+
     def _refresh_conditional_entities(self) -> None:
-        mode_availability = "online" if self.state.can_change_mode else "offline"
-        self.mqtt.publish(f"{self.topic_prefix}/mode/availability", mode_availability, retain=True)
+        self._publish_mode_discovery()
+        self.mqtt.publish(
+            f"{self.topic_prefix}/mode_switch_condition/state",
+            self._mode_switch_condition(),
+            retain=True,
+        )
         winter_topic = f"{self.discovery_prefix}/switch/moorgen_tech_system/winter_humidifier/config"
         if not self.state.show_winter_humidifier:
             # An empty retained MQTT discovery payload removes the entity from HA.
