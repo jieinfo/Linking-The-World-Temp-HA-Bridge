@@ -332,6 +332,11 @@ class MoorgenClient:
         if self._ready.is_set():
             self._send(6, 0x0E, b"")
 
+    def request_tech_system_status(self) -> None:
+        """Ask for the technology-system status category used by the App."""
+        if self._ready.is_set():
+            self._send(3, 7, tlv(0x000F, b"\x21"))
+
     def _send_hello(self) -> None:
         body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
         body += bytes.fromhex("13021000") + self._client_id.encode("ascii")
@@ -536,26 +541,35 @@ class Bridge:
                 return
             suffix = relative_topic.removesuffix("/set")
             if suffix == "power":
-                self._send_host_command(COMMAND_POWER_ON if value == "on" else COMMAND_POWER_OFF)
-                self._track_pending_command("system", "总控开关", {"power": "ON" if value == "on" else "OFF"})
+                self._send_and_track_command(
+                    "system",
+                    "总控开关",
+                    {"power": "ON" if value == "on" else "OFF"},
+                    self.tech_system_mac,
+                    COMMAND_POWER_ON if value == "on" else COMMAND_POWER_OFF,
+                )
             elif suffix == "mode":
                 if not self.state.can_change_mode:
                     raise RuntimeError("mode changes are only allowed while the tech system is off")
                 mode = self._normalize_mode(value)
-                self._send_host_command(COMMAND_MODE, MODE_VALUES[mode])
-                self._track_pending_command("system", "总控模式", {"mode": mode})
+                self._send_and_track_command(
+                    "system", "总控模式", {"mode": mode}, self.tech_system_mac, COMMAND_MODE, MODE_VALUES[mode]
+                )
             elif suffix == "scene":
                 scene = self._normalize_scene(value)
-                self._send_host_command(COMMAND_SCENE, SCENE_VALUES[scene])
-                self._track_pending_command("system", "总控场景", {"scene": scene})
+                self._send_and_track_command(
+                    "system", "总控场景", {"scene": scene}, self.tech_system_mac, COMMAND_SCENE, SCENE_VALUES[scene]
+                )
             elif suffix == "winter_humidifier":
                 if not self.state.show_winter_humidifier:
                     raise RuntimeError("winter humidifier is only available in heat mode")
-                self._send_host_command(COMMAND_WINTER_HUMIDIFIER, 1 if value == "on" else 0)
-                self._track_pending_command(
+                self._send_and_track_command(
                     "system",
                     "冬季加湿",
                     {"winter_humidifier": "ON" if value == "on" else "OFF"},
+                    self.tech_system_mac,
+                    COMMAND_WINTER_HUMIDIFIER,
+                    1 if value == "on" else 0,
                 )
             else:
                 LOG.warning("ignored MQTT command topic: %s", message.topic)
@@ -591,6 +605,43 @@ class Bridge:
             self.client.send_command_to(mac, command, value)
             self._last_command_at = time.monotonic()
 
+    def _send_and_track_command(
+        self,
+        target: str,
+        label: str,
+        expected: dict[str, str],
+        mac: bytes,
+        command: int,
+        value: int | None = None,
+    ) -> None:
+        """Send a command without missing an immediate controller status reply."""
+        if not self.allow_control:
+            raise RuntimeError("Bridge is in read-only mode; set safety.allow_control to true to enable commands")
+        if self.require_protocol_verification and not self.protocol_verified:
+            raise RuntimeError("controller protocol has not been verified by a compatible status report")
+        with self._command_lock:
+            elapsed = None if self._last_command_at is None else time.monotonic() - self._last_command_at
+            if elapsed is not None and elapsed < self.command_min_interval:
+                raise RuntimeError("commands are rate-limited; wait briefly before retrying")
+
+            # The reader thread can receive the controller's status report as
+            # soon as sendall returns, so register the expectation first.
+            self._track_pending_command(target, label, expected)
+            try:
+                self.client.send_command_to(mac, command, value)
+            except Exception:
+                self.pending_commands.pop(target, None)
+                self._publish_bridge_diagnostics()
+                raise
+            self._last_command_at = time.monotonic()
+            try:
+                # Category 0x21 is requested by the official App after login.
+                # It provides a status-refresh fallback when an unsolicited
+                # state event is delayed or omitted by the controller.
+                self.client.request_tech_system_status()
+            except OSError as error:
+                LOG.warning("could not request MC7021 status refresh after %s: %s", label, error)
+
     def _thermostat_command(self, mac_hex: str, setting: str, value: str) -> None:
         thermostat = self.thermostats.get(mac_hex)
         if not thermostat:
@@ -602,11 +653,13 @@ class Bridge:
                     f"temperature must be between {THERMOSTAT_MIN_TEMPERATURE} and {THERMOSTAT_MAX_TEMPERATURE} degrees"
                 )
             raw_value = int(temperature) * 2
-            self._send_command_to(thermostat.mac, COMMAND_MODE, raw_value)
-            self._track_pending_command(
+            self._send_and_track_command(
                 f"thermostat_{mac_hex}",
                 f"{self._thermostat_name(thermostat)} 设定温度",
                 {"target_temperature": f"{int(temperature)}"},
+                thermostat.mac,
+                COMMAND_MODE,
+                raw_value,
             )
         elif setting in ("power", "mode"):
             if setting == "mode" and value not in ("off", self._thermostat_active_hvac_mode()):
@@ -614,14 +667,12 @@ class Bridge:
             if setting == "power" and value not in ("off", "on"):
                 raise RuntimeError(f"unsupported thermostat power state: {value}")
             enabled = value != "off"
-            self._send_command_to(
-                thermostat.mac,
-                COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
-            )
-            self._track_pending_command(
+            self._send_and_track_command(
                 f"thermostat_{mac_hex}",
                 f"{self._thermostat_name(thermostat)} 开关",
                 {"power": "ON" if enabled else "OFF"},
+                thermostat.mac,
+                COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
             )
         else:
             raise RuntimeError(f"unsupported thermostat setting: {setting}")

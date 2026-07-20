@@ -197,6 +197,47 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("system", bridge.pending_commands)
         self.assertIn("已确认", bridge.last_command_status)
 
+    def test_tracked_command_registers_before_an_immediate_status_reply(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+            "safety": {"command_min_interval": 0},
+        }
+        bridge = Bridge(config)
+        bridge.protocol_verified = True
+        bridge.mqtt.publish = MagicMock()
+        bridge.client.request_tech_system_status = MagicMock()
+
+        def reply_immediately(*_args):
+            bridge._confirm_pending_command("system", {"power": "ON"})
+
+        bridge.client.send_command_to = MagicMock(side_effect=reply_immediately)
+        bridge._send_and_track_command(
+            "system", "总控开关", {"power": "ON"}, bridge.tech_system_mac, COMMAND_POWER_ON
+        )
+
+        self.assertNotIn("system", bridge.pending_commands)
+        self.assertEqual(bridge.last_command_status, "已确认: 总控开关")
+        bridge.client.request_tech_system_status.assert_called_once_with()
+
+    def test_failed_tracked_command_does_not_leave_a_pending_lock(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+            "safety": {"command_min_interval": 0},
+        }
+        bridge = Bridge(config)
+        bridge.protocol_verified = True
+        bridge.mqtt.publish = MagicMock()
+        bridge.client.send_command_to = MagicMock(side_effect=OSError("socket closed"))
+
+        with self.assertRaises(OSError):
+            bridge._send_and_track_command(
+                "system", "总控开关", {"power": "ON"}, bridge.tech_system_mac, COMMAND_POWER_ON
+            )
+
+        self.assertNotIn("system", bridge.pending_commands)
+
     def test_controller_health_detects_reader_failure_and_silence(self):
         config = {
             "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
