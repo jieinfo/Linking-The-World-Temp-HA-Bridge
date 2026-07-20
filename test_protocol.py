@@ -34,6 +34,21 @@ class ProtocolTests(unittest.TestCase):
         decoded = YasHcpDecoder().feed(source)
         self.assertEqual(decoded, [YasHcpFrame(4, 9, 37, b"example")])
 
+    def test_yashcp_decoder_recovers_from_a_stray_trailing_delimiter(self):
+        source = YasHcpFrame(5, 0x0C, 18, b"status").encode()
+        decoder = YasHcpDecoder()
+        # MC7021 frames end with '#' and the next frame also starts with '#'.
+        # This reproduces an interrupted read that leaves the old trailer in
+        # front of a complete subsequent frame.
+        decoded = decoder.feed(b"#" + source)
+        self.assertEqual(decoded, [YasHcpFrame(5, 0x0C, 18, b"status")])
+
+    def test_yashcp_decoder_keeps_a_partially_received_magic_prefix(self):
+        source = YasHcpFrame(5, 0x0C, 19, b"status").encode()
+        decoder = YasHcpDecoder()
+        self.assertEqual(decoder.feed(source[:7]), [])
+        self.assertEqual(decoder.feed(source[7:]), [YasHcpFrame(5, 0x0C, 19, b"status")])
+
     def test_captured_wire_envelope(self):
         frame = YasHcpFrame(1, 3, 0, b"x").encode()
         self.assertEqual(frame, b"#\x12\x00dooyashcp\x01\x01\x03\x00\x00\x01\x00x#")
