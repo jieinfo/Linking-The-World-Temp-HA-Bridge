@@ -420,7 +420,7 @@ class Bridge:
         mqtt_config = config["mqtt"]
         self.topic_prefix = mqtt_config.get("topic_prefix", "moorgen/tech_system")
         self.discovery_prefix = mqtt_config.get("discovery_prefix", "homeassistant")
-        self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=mqtt_config.get("client_id", "moorgen-ha-bridge"))
+        self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=mqtt_config.get("client_id", "linking-the-world-temp-ha-bridge"))
         if mqtt_config.get("username"):
             self.mqtt.username_pw_set(mqtt_config["username"], mqtt_config.get("password"))
         self.mqtt.on_connect = self._mqtt_connected
