@@ -1,6 +1,6 @@
 name: Linking The World Temp Bridge
-version: 0.2.4
-slug: moorgen_ha_bridge
+version: 0.2.5
+slug: linking_the_world_temp_ha_bridge
 description: Local Home Assistant bridge for Linking The World temperature systems
 url: https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
 arch:

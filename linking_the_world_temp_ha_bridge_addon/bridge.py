@@ -23,7 +23,7 @@ from typing import Callable
 import paho.mqtt.client as mqtt
 import yaml
 
-LOG = logging.getLogger("moorgen_ha_bridge")
+LOG = logging.getLogger("linking_the_world_temp_ha_bridge")
 # Each YAS HCP payload is carried in the App's ``# + uint16 length`` envelope.
 # The captured wire magic is consequently ``dooyashcp``, followed by one '#'.
 MAGIC = b"dooyashcp"
