@@ -1,0 +1,24 @@
+# 更新日志
+
+## 0.2.7
+
+- 新增 Home Assistant 附加组件更新日志。
+- CI 现在会校验每个发布版本都有对应的更新日志条目。
+
+## 0.2.6
+
+- 将默认 MQTT 客户端 ID 更新为 Linking The World 项目名称。
+- 更新独立运行说明中的项目目录名称。
+
+## 0.2.5
+
+- 将附加组件目录更名为 `linking_the_world_temp_ha_bridge_addon`。
+- 将附加组件 slug 更名为 `linking_the_world_temp_ha_bridge`。
+
+## 0.2.4
+
+- 更新 GitHub 仓库地址与附加组件仓库元数据。
+
+## 0.2.3
+
+- 稳定版本基线。
