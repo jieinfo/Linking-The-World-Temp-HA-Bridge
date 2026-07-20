@@ -34,6 +34,8 @@ DEFAULT_CLIENT_ID = "ff9549d5891998e5"
 DEFAULT_THERMOSTAT_OFFLINE_AFTER = 900.0
 DEFAULT_CONTROLLER_SILENCE_TIMEOUT = 300.0
 DEFAULT_COMMAND_CONFIRMATION_TIMEOUT = 8.0
+THERMOSTAT_MIN_TEMPERATURE = 16
+THERMOSTAT_MAX_TEMPERATURE = 28
 
 # A valid RSA public key is required by the observed first YAS HCP hello. The
 # host did not encrypt subsequent App traffic in the supplied capture, so a
@@ -594,8 +596,10 @@ class Bridge:
             raise RuntimeError(f"unknown thermostat: {mac_hex}")
         if setting == "temperature":
             temperature = float(value)
-            if not temperature.is_integer() or not 5 <= temperature <= 40:
-                raise RuntimeError("temperature must be between 5 and 40 degrees")
+            if not temperature.is_integer() or not THERMOSTAT_MIN_TEMPERATURE <= temperature <= THERMOSTAT_MAX_TEMPERATURE:
+                raise RuntimeError(
+                    f"temperature must be between {THERMOSTAT_MIN_TEMPERATURE} and {THERMOSTAT_MAX_TEMPERATURE} degrees"
+                )
             raw_value = int(temperature) * 2
             self._send_command_to(thermostat.mac, COMMAND_MODE, raw_value)
             self._track_pending_command(
@@ -791,8 +795,8 @@ class Bridge:
             "temperature_state_topic": f"{topic}/temperature/state",
             "current_temperature_topic": f"{topic}/current_temperature",
             "current_humidity_topic": f"{topic}/humidity",
-            "min_temp": 5,
-            "max_temp": 40,
+            "min_temp": THERMOSTAT_MIN_TEMPERATURE,
+            "max_temp": THERMOSTAT_MAX_TEMPERATURE,
             "temp_step": 1,
             "precision": 0.1,
             "temperature_unit": "C",
