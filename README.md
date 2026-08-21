@@ -12,6 +12,7 @@
 - 制冷、制热、通风、除湿模式
 - 居家/离家场景与冬季加湿
 - 房间子温控面板的开启/关闭、16-28°C 整度设定温度、实际温度和湿度
+- 面向自动化的平滑温度/湿度实体，以及防抖自动化 Blueprint
 - 子面板按主机实时上报自动发现，数量不限
 - MQTT Discovery、Home Assistant Climate 卡片，以及 HomeKit Bridge 转发
 - 主机状态确认、断线自动恢复，以及总控连接/最近命令/面板数量诊断实体
@@ -60,6 +61,22 @@ https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
 安全项默认值：`require_protocol_verification: true`、`controller_silence_timeout: 300`、
 `command_confirmation_timeout: 8`。不建议在生产环境关闭协议校验或缩短静默超时。
 
+## 自动化防抖
+
+`0.2.13` 起，每个温控面板除保留原始温湿度外，还会提供“自动化温度”和
+“自动化湿度”实体。它们默认采用最近 3 个上报样本的中位数，且分别达到
+`0.2°C` 和 `2%` 的最小变化后才更新，适合用作自动化条件；面板和 Climate
+卡片仍显示原始读数，不受影响。
+
+请再配合持续时间条件，避免网络恢复或短暂波动立即触发设备。仓库提供两份可导入 Blueprint：
+
+- [平滑测量值持续高于阈值](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://raw.githubusercontent.com/jieinfo/Linking-The-World-Temp-HA-Bridge/main/blueprints/automation/linking_the_world_temp_ha_bridge/stable_measurement_above.yaml)
+- [平滑测量值持续低于阈值](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://raw.githubusercontent.com/jieinfo/Linking-The-World-Temp-HA-Bridge/main/blueprints/automation/linking_the_world_temp_ha_bridge/stable_measurement_below.yaml)
+
+创建自动化时选择对应房间的“自动化温度”或“自动化湿度”，设置阈值和持续时间；
+温度建议至少 3-5 分钟，湿度建议至少 5 分钟。对于开启/关闭成对控制，请保留回差，
+例如低于 `25.5°C` 开启而达到 `26.0°C` 才关闭。
+
 ## 独立运行
 
 ```sh
@@ -82,6 +99,8 @@ python3 bridge.py --config config.yaml --debug
   会话；附加组件入口会在 15 秒后建立新会话。
 - 子面板默认 900 秒未上报会在 HA 标记为不可用；可通过
   `thermostat_offline_after` 调整，设为 `0` 可关闭该检测。
+- 自动化平滑参数可通过 `automation_filter` 调整；不建议把样本数设为 1，
+也不建议将最小变化阈值设为 0。
 - 原始主机状态报文发布在 `moorgen/tech_system/status_raw`，可用于排查
   未知设备或固件差异。
 
