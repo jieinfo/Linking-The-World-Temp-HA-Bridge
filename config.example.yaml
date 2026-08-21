@@ -34,3 +34,13 @@ safety:
   controller_silence_timeout: 300
   # Keep HA on the last confirmed value when the controller does not report this command.
   command_confirmation_timeout: 8
+
+# These derived readings are intended for HA automations. Raw temperature and
+# humidity remain available for the dashboard and troubleshooting.
+automation_filter:
+  enabled: true
+  # Median window size. Three samples discard a single abnormal report.
+  samples: 3
+  # Only publish a new derived value after at least this much change.
+  temperature_deadband: 0.2
+  humidity_deadband: 2

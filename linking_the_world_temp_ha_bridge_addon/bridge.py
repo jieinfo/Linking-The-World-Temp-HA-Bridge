@@ -9,9 +9,11 @@ sends an MT8157 device-online report.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import logging
 import socket
+import statistics
 import struct
 import threading
 import time
@@ -34,6 +36,9 @@ DEFAULT_CLIENT_ID = "ff9549d5891998e5"
 DEFAULT_THERMOSTAT_OFFLINE_AFTER = 900.0
 DEFAULT_CONTROLLER_SILENCE_TIMEOUT = 300.0
 DEFAULT_COMMAND_CONFIRMATION_TIMEOUT = 8.0
+DEFAULT_AUTOMATION_FILTER_SAMPLES = 3
+DEFAULT_AUTOMATION_TEMPERATURE_DEADBAND = 0.2
+DEFAULT_AUTOMATION_HUMIDITY_DEADBAND = 2
 THERMOSTAT_MIN_TEMPERATURE = 16
 THERMOSTAT_MAX_TEMPERATURE = 28
 MAX_YASHCP_PAYLOAD_LENGTH = 16_384
@@ -167,6 +172,16 @@ class ThermostatState:
     humidity: int
     last_seen: float = 0.0
     available: bool = True
+
+
+@dataclass
+class AutomationMeasurementState:
+    """Filtered measurements reserved for automations, not the UI's raw readings."""
+
+    temperature_samples: deque[float]
+    humidity_samples: deque[int]
+    temperature: float | None = None
+    humidity: int | None = None
 
 
 @dataclass
@@ -469,13 +484,27 @@ class Bridge:
         self.command_confirmation_timeout = float(
             safety.get("command_confirmation_timeout", DEFAULT_COMMAND_CONFIRMATION_TIMEOUT)
         )
+        automation_filter = config.get("automation_filter", {})
+        self.automation_filter_enabled = bool(automation_filter.get("enabled", True))
+        self.automation_filter_samples = int(
+            automation_filter.get("samples", DEFAULT_AUTOMATION_FILTER_SAMPLES)
+        )
+        self.automation_temperature_deadband = float(
+            automation_filter.get("temperature_deadband", DEFAULT_AUTOMATION_TEMPERATURE_DEADBAND)
+        )
+        self.automation_humidity_deadband = int(
+            automation_filter.get("humidity_deadband", DEFAULT_AUTOMATION_HUMIDITY_DEADBAND)
+        )
         if (
             self.command_min_interval < 0
             or self.thermostat_offline_after < 0
             or self.controller_silence_timeout <= 0
             or self.command_confirmation_timeout <= 0
+            or not 1 <= self.automation_filter_samples <= 15
+            or self.automation_temperature_deadband < 0
+            or self.automation_humidity_deadband < 0
         ):
-            raise ValueError("safety intervals must be non-negative, and controller timeouts must be positive")
+            raise ValueError("safety intervals must be non-negative, controller timeouts positive, and automation filter values valid")
         self._command_lock = threading.Lock()
         self._pending_command_lock = threading.Lock()
         self._last_command_at: float | None = None
@@ -485,6 +514,7 @@ class Bridge:
         self.state = TechSystemState()
         self.room_names: dict[str, str] = {}
         self.thermostats: dict[str, ThermostatState] = {}
+        self._automation_measurements: dict[str, AutomationMeasurementState] = {}
         self.protocol_verified = False
         self.pending_commands: dict[str, PendingCommand] = {}
         self.last_command_status = "idle"
@@ -492,11 +522,12 @@ class Bridge:
         self._thermostat_discovery_fingerprints: dict[str, tuple[str, str]] = {}
         self._mode_discovery_options: tuple[str, ...] | None = None
         LOG.info(
-            "Bridge configured for tech_system_mac=%s, controls=%s, thermostat timeout=%ss, protocol verification=%s",
+            "Bridge configured for tech_system_mac=%s, controls=%s, thermostat timeout=%ss, protocol verification=%s, automation filter=%s",
             self.tech_system_mac.hex(),
             "enabled" if self.allow_control else "read-only",
             self.thermostat_offline_after,
             "required" if self.require_protocol_verification else "disabled",
+            "enabled" if self.automation_filter_enabled else "disabled",
         )
 
     def run(self) -> None:
@@ -773,6 +804,7 @@ class Bridge:
         if thermostat:
             thermostat.last_seen = time.monotonic()
             self.thermostats[thermostat.mac.hex()] = thermostat
+            self._update_automation_measurements(thermostat)
             self._publish_thermostat_discovery(thermostat)
             self._publish_thermostat_state(thermostat)
             self._confirm_pending_command(
@@ -892,6 +924,49 @@ class Bridge:
         self.mqtt.publish(f"{topic}/temperature/state", f"{thermostat.target_temperature:g}", retain=True)
         self.mqtt.publish(f"{topic}/current_temperature", f"{thermostat.current_temperature:g}", retain=True)
         self.mqtt.publish(f"{topic}/humidity", str(thermostat.humidity), retain=True)
+        self._publish_automation_measurements(thermostat)
+
+    def _update_automation_measurements(self, thermostat: ThermostatState) -> None:
+        """Keep a short median window so one report cannot flap an automation."""
+        if not self.automation_filter_enabled:
+            return
+        mac_hex = thermostat.mac.hex()
+        measurements = self._automation_measurements.get(mac_hex)
+        if measurements is None:
+            measurements = AutomationMeasurementState(
+                temperature_samples=deque(maxlen=self.automation_filter_samples),
+                humidity_samples=deque(maxlen=self.automation_filter_samples),
+            )
+            self._automation_measurements[mac_hex] = measurements
+
+        measurements.temperature_samples.append(thermostat.current_temperature)
+        measurements.humidity_samples.append(thermostat.humidity)
+        filtered_temperature = round(statistics.median(measurements.temperature_samples), 1)
+        filtered_humidity = round(statistics.median(measurements.humidity_samples))
+        if (
+            measurements.temperature is None
+            or abs(filtered_temperature - measurements.temperature) >= self.automation_temperature_deadband
+        ):
+            measurements.temperature = filtered_temperature
+        if (
+            measurements.humidity is None
+            or abs(filtered_humidity - measurements.humidity) >= self.automation_humidity_deadband
+        ):
+            measurements.humidity = filtered_humidity
+
+    def _publish_automation_measurements(self, thermostat: ThermostatState) -> None:
+        if not self.automation_filter_enabled:
+            return
+        measurements = self._automation_measurements.get(thermostat.mac.hex())
+        if measurements is None or measurements.temperature is None or measurements.humidity is None:
+            return
+        topic = self._thermostat_topic(thermostat)
+        self.mqtt.publish(
+            f"{topic}/automation/current_temperature",
+            f"{measurements.temperature:g}",
+            retain=True,
+        )
+        self.mqtt.publish(f"{topic}/automation/humidity", str(measurements.humidity), retain=True)
 
     def _publish_thermostat_discovery(self, thermostat: ThermostatState) -> None:
         mac_hex = thermostat.mac.hex()
@@ -903,6 +978,7 @@ class Bridge:
             return
         self._thermostat_discovery_fingerprints[mac_hex] = fingerprint
         device = {"identifiers": [f"moorgen_thermostat_{mac_hex}"], "name": thermostat_name}
+        self._publish_automation_measurement_discovery(mac_hex, topic, device)
         # The panel has only enable/disable, but Climate provides the compact
         # thermostat card the user expects. Map Climate's heat/off modes to it.
         self._discovery("climate", f"thermostat_{mac_hex}", {
@@ -937,6 +1013,41 @@ class Bridge:
                 b"",
                 retain=True,
             )
+
+    def _publish_automation_measurement_discovery(self, mac_hex: str, topic: str, device: dict) -> None:
+        for object_id, name, state_topic, device_class, unit in (
+            (
+                f"thermostat_{mac_hex}_automation_temperature",
+                "自动化温度",
+                f"{topic}/automation/current_temperature",
+                "temperature",
+                "°C",
+            ),
+            (
+                f"thermostat_{mac_hex}_automation_humidity",
+                "自动化湿度",
+                f"{topic}/automation/humidity",
+                "humidity",
+                "%",
+            ),
+        ):
+            discovery_topic = f"{self.discovery_prefix}/sensor/moorgen_tech_system/{object_id}/config"
+            if not self.automation_filter_enabled:
+                self.mqtt.publish(discovery_topic, b"", retain=True)
+                continue
+            self._discovery("sensor", object_id, {
+                "name": name,
+                "unique_id": f"moorgen_{object_id}",
+                "availability_topic": f"{topic}/availability",
+                "payload_available": "online",
+                "payload_not_available": "offline",
+                "state_topic": state_topic,
+                "device_class": device_class,
+                "unit_of_measurement": unit,
+                "state_class": "measurement",
+                "suggested_display_precision": 1 if device_class == "temperature" else 0,
+                "device": device,
+            })
 
     def _publish_discovery(self) -> None:
         common = {

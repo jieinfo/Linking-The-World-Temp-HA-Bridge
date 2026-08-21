@@ -174,6 +174,60 @@ class ProtocolTests(unittest.TestCase):
             "无法连接主机，请检查地址、端口和网络",
         )
 
+    def test_automation_measurements_filter_out_single_reports_and_apply_deadband(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+            "automation_filter": {
+                "samples": 3,
+                "temperature_deadband": 0.2,
+                "humidity_deadband": 2,
+            },
+        }
+        bridge = Bridge(config)
+        bridge.mqtt.publish = MagicMock()
+        mac = bytes.fromhex("ff00ffffffff01ff")
+
+        for temperature, humidity in ((25.0, 50), (25.1, 51), (40.0, 99), (25.3, 54)):
+            thermostat = ThermostatState(mac, "r1100", 20, temperature, "ON", humidity)
+            bridge._update_automation_measurements(thermostat)
+
+        measurements = bridge._automation_measurements[mac.hex()]
+        self.assertEqual(measurements.temperature, 25.3)
+        self.assertEqual(measurements.humidity, 54)
+
+        bridge._publish_automation_measurements(thermostat)
+        self.assertIn(
+            ("moorgen/tech_system/thermostat/ff00ffffffff01ff/automation/current_temperature", "25.3"),
+            [(call.args[0], call.args[1]) for call in bridge.mqtt.publish.call_args_list],
+        )
+        self.assertIn(
+            ("moorgen/tech_system/thermostat/ff00ffffffff01ff/automation/humidity", "54"),
+            [(call.args[0], call.args[1]) for call in bridge.mqtt.publish.call_args_list],
+        )
+
+    def test_automation_measurement_discovery_is_tied_to_the_panel_availability(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        bridge.mqtt.publish = MagicMock()
+        thermostat = ThermostatState(bytes.fromhex("ff00ffffffff01ff"), "r1100", 20, 25, "ON", 50)
+        bridge._publish_thermostat_discovery(thermostat)
+
+        topic = "homeassistant/sensor/moorgen_tech_system/thermostat_ff00ffffffff01ff_automation_temperature/config"
+        payload = next(
+            json.loads(call.args[1])
+            for call in bridge.mqtt.publish.call_args_list
+            if call.args[0] == topic
+        )
+        self.assertEqual(payload["name"], "自动化温度")
+        self.assertEqual(
+            payload["availability_topic"],
+            "moorgen/tech_system/thermostat/ff00ffffffff01ff/availability",
+        )
+
     def test_configurable_total_control_mac_and_text_fallback(self):
         custom_mac = bytes.fromhex("0102030405060708")
         body = tlv(0x0004, custom_mac) + tlv(0x000B, b"\x01") + tlv(0x000A, b"\x02")
