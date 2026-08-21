@@ -14,6 +14,7 @@ from bridge import (
     COMMAND_WINTER_HUMIDIFIER,
     CLIMATE_MODE_FOR_SYSTEM_MODE,
     Bridge,
+    ConfigError,
     LivenessMonitor,
     decode_text,
     decode_thermostat_status,
@@ -150,6 +151,8 @@ class ProtocolTests(unittest.TestCase):
         connection_topic = "homeassistant/binary_sensor/moorgen_tech_system/bridge_connection/config"
         error_topic = "homeassistant/sensor/moorgen_tech_system/bridge_connection_error/config"
         heartbeat_topic = "homeassistant/sensor/moorgen_tech_system/bridge_last_seen/config"
+        mqtt_topic = "homeassistant/binary_sensor/moorgen_tech_system/bridge_mqtt_connection/config"
+        control_topic = "homeassistant/sensor/moorgen_tech_system/bridge_control_permission/config"
         connection_payload = next(
             json.loads(call.args[1])
             for call in bridge.mqtt.publish.call_args_list
@@ -165,10 +168,50 @@ class ProtocolTests(unittest.TestCase):
             for call in bridge.mqtt.publish.call_args_list
             if call.args[0] == heartbeat_topic
         )
+        mqtt_payload = next(
+            json.loads(call.args[1])
+            for call in bridge.mqtt.publish.call_args_list
+            if call.args[0] == mqtt_topic
+        )
+        control_payload = next(
+            json.loads(call.args[1])
+            for call in bridge.mqtt.publish.call_args_list
+            if call.args[0] == control_topic
+        )
         self.assertNotIn("availability_topic", connection_payload)
         self.assertNotIn("availability_topic", error_payload)
         self.assertNotIn("availability_topic", heartbeat_payload)
+        self.assertNotIn("availability_topic", mqtt_payload)
+        self.assertNotIn("availability_topic", control_payload)
         self.assertEqual(heartbeat_payload["device_class"], "timestamp")
+
+    def test_configuration_errors_are_user_readable(self):
+        base = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        invalid_timeout = {**base, "safety": {"command_confirmation_timeout": 0.5}}
+        with self.assertRaisesRegex(ConfigError, "command_confirmation_timeout"):
+            Bridge(invalid_timeout)
+        invalid_topic = {**base, "mqtt": {"host": "broker", "client_id": "test", "topic_prefix": "bad/#"}}
+        with self.assertRaisesRegex(ConfigError, "topic_prefix"):
+            Bridge(invalid_topic)
+        invalid_host = {**base, "moorgen": {"host": "invalid host!", "username": "Test", "password": ""}}
+        with self.assertRaisesRegex(ConfigError, "moorgen.host"):
+            Bridge(invalid_host)
+
+    def test_control_permission_explains_the_effective_safety_gate(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        bridge.client = MagicMock(is_ready=True)
+        self.assertEqual(bridge._control_permission(), "等待兼容状态验证")
+        bridge.protocol_verified = True
+        self.assertEqual(bridge._control_permission(), "控制已就绪")
+        bridge.allow_control = False
+        self.assertEqual(bridge._control_permission(), "只读模式")
 
     def test_liveness_monitor_tracks_forward_progress_without_host_state(self):
         monitor = LivenessMonitor(max_age=10)
@@ -329,6 +372,20 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(thermostat.available)
         self.assertIn("availability", bridge.mqtt.publish.call_args.args[0])
 
+    def test_host_session_end_marks_all_discovered_panels_offline(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        thermostat = ThermostatState(bytes.fromhex("ff00ffffffff01ff"), "r1100", 20, 25, "ON", 50)
+        bridge.thermostats[thermostat.mac.hex()] = thermostat
+        bridge.mqtt.publish = MagicMock()
+        bridge._publish_all_thermostats_availability("offline")
+        bridge.mqtt.publish.assert_called_once_with(
+            "moorgen/tech_system/thermostat/ff00ffffffff01ff/availability", "offline", retain=True
+        )
+
     def test_child_target_temperature_requires_whole_degrees(self):
         config = {
             "moorgen": {"host": "192.0.2.1", "port": 9000, "username": "Test", "password": "", "client_id": DEFAULT_CLIENT_ID},
@@ -366,7 +423,9 @@ class ProtocolTests(unittest.TestCase):
 
         bridge.protocol_verified = True
         bridge._send_host_command(COMMAND_POWER_ON)
-        bridge._track_pending_command("system", "总控开关", {"power": "ON"})
+        bridge._track_pending_command(
+            "system", "总控开关", {"power": "ON"}, bridge.tech_system_mac, COMMAND_POWER_ON, None
+        )
         self.assertIsNone(bridge.state.power)
         bridge._confirm_pending_command("system", {"power": "OFF"})
         self.assertIn("system", bridge.pending_commands)
@@ -422,9 +481,13 @@ class ProtocolTests(unittest.TestCase):
         }
         bridge = Bridge(config)
         bridge.mqtt.publish = MagicMock()
-        bridge._track_pending_command("system", "总控开关", {"power": "ON"})
+        bridge._track_pending_command(
+            "system", "总控开关", {"power": "ON"}, bridge.tech_system_mac, COMMAND_POWER_ON, None
+        )
         with self.assertRaisesRegex(RuntimeError, "awaiting confirmation"):
-            bridge._track_pending_command("system", "总控模式", {"mode": "cool"})
+            bridge._track_pending_command(
+                "system", "总控模式", {"mode": "cool"}, bridge.tech_system_mac, COMMAND_MODE, MODE_VALUES["cool"]
+            )
         self.assertEqual(bridge.pending_commands["system"].label, "总控开关")
 
     def test_controller_health_detects_reader_failure_and_silence(self):
