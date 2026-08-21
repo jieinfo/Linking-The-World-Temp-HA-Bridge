@@ -1,5 +1,5 @@
 name: Linking The World Temp Bridge
-version: 0.2.12
+version: 0.2.13
 slug: linking_the_world_temp_ha_bridge
 description: Local Home Assistant bridge for Linking The World temperature systems
 url: https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
@@ -33,6 +33,10 @@ options:
   require_protocol_verification: true
   controller_silence_timeout: 300
   command_confirmation_timeout: 8
+  automation_filter_enabled: true
+  automation_filter_samples: 3
+  automation_temperature_deadband: 0.2
+  automation_humidity_deadband: 2
 schema:
   moorgen_host: str
   moorgen_port: port
@@ -53,3 +57,7 @@ schema:
   require_protocol_verification: bool
   controller_silence_timeout: int
   command_confirmation_timeout: int
+  automation_filter_enabled: bool
+  automation_filter_samples: int
+  automation_temperature_deadband: float
+  automation_humidity_deadband: int
