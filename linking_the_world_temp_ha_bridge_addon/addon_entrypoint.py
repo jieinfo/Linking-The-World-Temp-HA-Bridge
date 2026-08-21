@@ -41,6 +41,12 @@ def load_options() -> dict:
             "controller_silence_timeout": float(options.get("controller_silence_timeout", 300)),
             "command_confirmation_timeout": float(options.get("command_confirmation_timeout", 8)),
         },
+        "automation_filter": {
+            "enabled": options.get("automation_filter_enabled", True),
+            "samples": int(options.get("automation_filter_samples", 3)),
+            "temperature_deadband": float(options.get("automation_temperature_deadband", 0.2)),
+            "humidity_deadband": int(options.get("automation_humidity_deadband", 2)),
+        },
     }
 
 
