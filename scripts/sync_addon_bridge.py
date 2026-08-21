@@ -9,7 +9,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "bridge.py"
-DESTINATION = ROOT / "home_assistant_addon" / "linking_the_world_temp_ha_bridge_addon" / "bridge.py"
+ADDON_DIRECTORY = ROOT / "linking_the_world_temp_ha_bridge_addon"
+# The local development bundle contains the repository under home_assistant_addon,
+# while the published GitHub repository uses the add-on directory at its root.
+if not ADDON_DIRECTORY.exists():
+    ADDON_DIRECTORY = ROOT / "home_assistant_addon" / "linking_the_world_temp_ha_bridge_addon"
+DESTINATION = ADDON_DIRECTORY / "bridge.py"
 
 
 def main() -> None:
