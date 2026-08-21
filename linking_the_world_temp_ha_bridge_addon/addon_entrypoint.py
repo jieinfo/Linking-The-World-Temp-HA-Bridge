@@ -47,6 +47,9 @@ def load_options() -> dict:
             "temperature_deadband": float(options.get("automation_temperature_deadband", 0.2)),
             "humidity_deadband": int(options.get("automation_humidity_deadband", 2)),
         },
+        "diagnostics": {
+            "publish_raw_status": options.get("publish_raw_status", False),
+        },
     }
 
 
