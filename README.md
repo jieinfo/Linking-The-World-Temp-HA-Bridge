@@ -95,6 +95,10 @@ python3 bridge.py --config config.yaml --debug
 ## 可靠性与诊断
 
 - Mosquitto 短暂重启后，Bridge 会独立自动重连 MQTT 并重新发布设备状态。
+- 附加组件提供只读的内部健康端点，并由 Home Assistant Supervisor 看门狗监测；
+  当 Bridge 主循环或关键线程长期卡住时，Supervisor 会自动重启附加组件。
+- 总控设备新增“Bridge 最近心跳”诊断实体，每 30 秒更新一次。它只说明 Bridge
+  进程仍在运行；主机是否已登录并可控制，仍以“主机连接”和“最近连接错误”为准。
 - MC7021 读线程停止、TCP 断开或连续 300 秒无任何主机流量时，Bridge 会退出本轮
   会话；附加组件入口会在 15 秒后建立新会话。
 - 子面板默认 900 秒未上报会在 HA 标记为不可用；可通过
@@ -103,5 +107,7 @@ python3 bridge.py --config config.yaml --debug
 也不建议将最小变化阈值设为 0。
 - 原始主机状态报文发布在 `moorgen/tech_system/status_raw`，可用于排查
   未知设备或固件差异。
+
+健康端点不提供 Web 控制、配置或密码信息；正常使用无需单独配置端口或心跳。
 
 本项目是社区本地集成，不替代设备厂商的调试、保修或安全控制流程。

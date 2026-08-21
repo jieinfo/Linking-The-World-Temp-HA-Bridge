@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import time
 
-from bridge import Bridge
+from bridge import Bridge, HealthEndpoint, LivenessMonitor
 
 
 OPTIONS_PATH = Path("/data/options.json")
@@ -52,15 +52,27 @@ def load_options() -> dict:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    while True:
-        bridge = Bridge(load_options())
-        try:
-            bridge.run()
-        except (ConnectionError, OSError, TimeoutError):
-            logging.exception("MC7021 session failed; retrying in 15 seconds")
-        finally:
-            bridge.client.close()
-        time.sleep(15)
+    monitor = LivenessMonitor()
+    endpoint = HealthEndpoint(monitor)
+    endpoint.start()
+    try:
+        while True:
+            monitor.touch("starting_session")
+            bridge: Bridge | None = None
+            try:
+                bridge = Bridge(load_options(), liveness_monitor=monitor)
+                bridge.run()
+            except (ConnectionError, OSError, TimeoutError):
+                monitor.touch("waiting_to_retry")
+                logging.exception("MC7021 session failed; retrying in 15 seconds")
+            finally:
+                if bridge is not None:
+                    bridge.client.close()
+            for _ in range(15):
+                monitor.touch("waiting_to_retry")
+                time.sleep(1)
+    finally:
+        endpoint.stop()
 
 
 if __name__ == "__main__":
