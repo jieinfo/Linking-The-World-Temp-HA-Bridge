@@ -193,6 +193,35 @@ class ProtocolTests(unittest.TestCase):
             retain=True,
         )
 
+    def test_mqtt_last_will_marks_the_bridge_offline_after_an_abrupt_exit(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        bridge.mqtt.will_set = MagicMock()
+        bridge._configure_mqtt_will()
+        bridge.mqtt.will_set.assert_called_once_with(
+            "moorgen/tech_system/availability", "offline", qos=0, retain=True
+        )
+
+    def test_raw_status_publishing_is_opt_in(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        bridge.mqtt.publish = MagicMock()
+        bridge._status_received(b"")
+        bridge.mqtt.publish.assert_not_called()
+
+        bridge.publish_raw_status = True
+        bridge._status_received(b"\x01\x02")
+        self.assertEqual(
+            bridge.mqtt.publish.call_args.args[:2],
+            ("moorgen/tech_system/status_raw", '{"raw":"0102"}'),
+        )
+
     def test_connection_error_diagnostics_describe_login_failures(self):
         self.assertEqual(
             Bridge._describe_connection_error(TimeoutError()),
@@ -385,6 +414,18 @@ class ProtocolTests(unittest.TestCase):
             )
 
         self.assertNotIn("system", bridge.pending_commands)
+
+    def test_second_command_for_the_same_target_waits_for_the_first_confirmation(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        bridge.mqtt.publish = MagicMock()
+        bridge._track_pending_command("system", "总控开关", {"power": "ON"})
+        with self.assertRaisesRegex(RuntimeError, "awaiting confirmation"):
+            bridge._track_pending_command("system", "总控模式", {"mode": "cool"})
+        self.assertEqual(bridge.pending_commands["system"].label, "总控开关")
 
     def test_controller_health_detects_reader_failure_and_silence(self):
         config = {
