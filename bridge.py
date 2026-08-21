@@ -551,6 +551,7 @@ class Bridge:
         self.mqtt.on_disconnect = self._mqtt_disconnected
         self.mqtt.reconnect_delay_set(min_delay=1, max_delay=30)
         self.mqtt_config = mqtt_config
+        self._configure_mqtt_will()
         self._stop = threading.Event()
         safety = config.get("safety", {})
         self.allow_control = bool(safety.get("allow_control", True))
@@ -576,6 +577,8 @@ class Bridge:
         self.automation_humidity_deadband = int(
             automation_filter.get("humidity_deadband", DEFAULT_AUTOMATION_HUMIDITY_DEADBAND)
         )
+        diagnostics = config.get("diagnostics", {})
+        self.publish_raw_status = bool(diagnostics.get("publish_raw_status", False))
         if (
             self.command_min_interval < 0
             or self.thermostat_offline_after < 0
@@ -588,6 +591,7 @@ class Bridge:
             raise ValueError("safety intervals must be non-negative, controller timeouts positive, and automation filter values valid")
         self._command_lock = threading.Lock()
         self._pending_command_lock = threading.Lock()
+        self._state_lock = threading.RLock()
         self._last_command_at: float | None = None
         # State starts unknown because the controller's packed 14-byte status
         # report is not fully mapped. Send an OFF command once after startup to
@@ -603,12 +607,13 @@ class Bridge:
         self._thermostat_discovery_fingerprints: dict[str, tuple[str, str]] = {}
         self._mode_discovery_options: tuple[str, ...] | None = None
         LOG.info(
-            "Bridge configured for tech_system_mac=%s, controls=%s, thermostat timeout=%ss, protocol verification=%s, automation filter=%s",
+            "Bridge configured for tech_system_mac=%s, controls=%s, thermostat timeout=%ss, protocol verification=%s, automation filter=%s, raw status=%s",
             self.tech_system_mac.hex(),
             "enabled" if self.allow_control else "read-only",
             self.thermostat_offline_after,
             "required" if self.require_protocol_verification else "disabled",
             "enabled" if self.automation_filter_enabled else "disabled",
+            "enabled" if self.publish_raw_status else "disabled",
         )
 
     def run(self) -> None:
@@ -627,7 +632,7 @@ class Bridge:
             self.mqtt.publish(f"{self.topic_prefix}/availability", "offline", retain=True)
             self.client.connect()
             self._touch_liveness("waiting_for_status")
-            if not self.protocol_verified:
+            if not self._protocol_is_verified():
                 self._set_connection_error("等待主机状态验证")
             while not self._stop.wait(1):
                 self._touch_liveness("running")
@@ -660,6 +665,18 @@ class Bridge:
         if self.liveness_monitor is not None:
             self.liveness_monitor.touch(phase)
 
+    def _configure_mqtt_will(self) -> None:
+        """Let HA discard a stale online state after an abrupt Bridge exit."""
+        self.mqtt.will_set(f"{self.topic_prefix}/availability", "offline", qos=0, retain=True)
+
+    def _protocol_is_verified(self) -> bool:
+        with self._state_lock:
+            return self.protocol_verified
+
+    def _thermostat_snapshot(self) -> list[ThermostatState]:
+        with self._state_lock:
+            return list(self.thermostats.values())
+
     @staticmethod
     def _describe_connection_error(error: Exception) -> str:
         if isinstance(error, TimeoutError):
@@ -674,14 +691,14 @@ class Bridge:
             return
         client.subscribe(f"{self.topic_prefix}/#")
         self._publish_discovery()
-        for thermostat in self.thermostats.values():
+        for thermostat in self._thermostat_snapshot():
             self._publish_thermostat_discovery(thermostat)
             self._publish_thermostat_state(thermostat)
         self._publish_bridge_diagnostics()
         self._publish_runtime_heartbeat()
         client.publish(
             f"{self.topic_prefix}/availability",
-            "online" if self.protocol_verified else "offline",
+            "online" if self._protocol_is_verified() else "offline",
             retain=True,
         )
         LOG.info("connected to MQTT broker")
@@ -774,7 +791,7 @@ class Bridge:
     def _send_command_to(self, mac: bytes, command: int, value: int | None = None) -> None:
         if not self.allow_control:
             raise RuntimeError("Bridge is in read-only mode; set safety.allow_control to true to enable commands")
-        if self.require_protocol_verification and not self.protocol_verified:
+        if self.require_protocol_verification and not self._protocol_is_verified():
             raise RuntimeError("controller protocol has not been verified by a compatible status report")
         with self._command_lock:
             elapsed = None if self._last_command_at is None else time.monotonic() - self._last_command_at
@@ -795,7 +812,7 @@ class Bridge:
         """Send a command without missing an immediate controller status reply."""
         if not self.allow_control:
             raise RuntimeError("Bridge is in read-only mode; set safety.allow_control to true to enable commands")
-        if self.require_protocol_verification and not self.protocol_verified:
+        if self.require_protocol_verification and not self._protocol_is_verified():
             raise RuntimeError("controller protocol has not been verified by a compatible status report")
         with self._command_lock:
             elapsed = None if self._last_command_at is None else time.monotonic() - self._last_command_at
@@ -822,7 +839,8 @@ class Bridge:
                 LOG.warning("could not request MC7021 status refresh after %s: %s", label, error)
 
     def _thermostat_command(self, mac_hex: str, setting: str, value: str) -> None:
-        thermostat = self.thermostats.get(mac_hex)
+        with self._state_lock:
+            thermostat = self.thermostats.get(mac_hex)
         if not thermostat:
             raise RuntimeError(f"unknown thermostat: {mac_hex}")
         if setting == "temperature":
@@ -866,29 +884,35 @@ class Bridge:
                 room_id = decode_text(value)
             elif tag == 0x0036 and room_id:
                 name = decode_text(value)
-                if self.room_names.get(room_id) != name:
-                    self.room_names[room_id] = name
-                    changed = True
+                with self._state_lock:
+                    if self.room_names.get(room_id) != name:
+                        self.room_names[room_id] = name
+                        changed = True
         if changed:
-            for thermostat in self.thermostats.values():
+            for thermostat in self._thermostat_snapshot():
                 self._publish_thermostat_discovery(thermostat)
 
     def _status_received(self, body: bytes) -> None:
-        payload = json.dumps({"raw": body.hex()}, separators=(",", ":"))
-        self.mqtt.publish(f"{self.topic_prefix}/status_raw", payload, retain=False)
+        if self.publish_raw_status:
+            payload = json.dumps({"raw": body.hex()}, separators=(",", ":"))
+            self.mqtt.publish(f"{self.topic_prefix}/status_raw", payload, retain=False)
         state = decode_tech_system_status(body, self.tech_system_mac)
         if state:
-            self.protocol_verified = True
+            with self._state_lock:
+                self.protocol_verified = True
+                for name, value in state.items():
+                    setattr(self.state, name, value)
             self._set_connection_error("无")
             for name, value in state.items():
-                setattr(self.state, name, value)
                 self._publish_state(name, value)
-            self._confirm_pending_command("system", {
-                "power": self.state.power,
-                "mode": self.state.mode,
-                "scene": self.state.scene,
-                "winter_humidifier": self.state.winter_humidifier,
-            })
+            with self._state_lock:
+                actual_state = {
+                    "power": self.state.power,
+                    "mode": self.state.mode,
+                    "scene": self.state.scene,
+                    "winter_humidifier": self.state.winter_humidifier,
+                }
+            self._confirm_pending_command("system", actual_state)
             self._publish_bridge_connection("online")
             self.mqtt.publish(f"{self.topic_prefix}/availability", "online", retain=True)
             self._publish_bridge_diagnostics()
@@ -898,8 +922,9 @@ class Bridge:
         thermostat = decode_thermostat_status(body, self.tech_system_mac)
         if thermostat:
             thermostat.last_seen = time.monotonic()
-            self.thermostats[thermostat.mac.hex()] = thermostat
-            self._update_automation_measurements(thermostat)
+            with self._state_lock:
+                self.thermostats[thermostat.mac.hex()] = thermostat
+                self._update_automation_measurements(thermostat)
             self._publish_thermostat_discovery(thermostat)
             self._publish_thermostat_state(thermostat)
             self._confirm_pending_command(
@@ -920,6 +945,9 @@ class Bridge:
 
     def _track_pending_command(self, target: str, label: str, expected: dict[str, str]) -> None:
         with self._pending_command_lock:
+            if target in self.pending_commands:
+                pending = self.pending_commands[target]
+                raise RuntimeError(f"command is still awaiting confirmation: {pending.label}")
             self.pending_commands[target] = PendingCommand(
                 label=label,
                 expected=expected,
@@ -959,18 +987,25 @@ class Bridge:
         self.mqtt.publish(f"{self.topic_prefix}/bridge/connection/state", value, retain=True)
 
     def _set_connection_error(self, value: str) -> None:
-        self.last_connection_error = value
+        with self._state_lock:
+            self.last_connection_error = value
         self.mqtt.publish(f"{self.topic_prefix}/bridge/connection_error/state", value, retain=True)
 
     def _publish_bridge_diagnostics(self) -> None:
-        self._publish_bridge_connection("online" if self.protocol_verified and self.client.is_ready else "offline")
+        with self._state_lock:
+            protocol_verified = self.protocol_verified
+            connection_error = self.last_connection_error
+            panel_count = len(self.thermostats)
+        with self._pending_command_lock:
+            last_command_status = self.last_command_status
+        self._publish_bridge_connection("online" if protocol_verified and self.client.is_ready else "offline")
         self.mqtt.publish(
             f"{self.topic_prefix}/bridge/connection_error/state",
-            self.last_connection_error,
+            connection_error,
             retain=True,
         )
-        self.mqtt.publish(f"{self.topic_prefix}/bridge/last_command/state", self.last_command_status, retain=True)
-        self.mqtt.publish(f"{self.topic_prefix}/bridge/panel_count/state", str(len(self.thermostats)), retain=True)
+        self.mqtt.publish(f"{self.topic_prefix}/bridge/last_command/state", last_command_status, retain=True)
+        self.mqtt.publish(f"{self.topic_prefix}/bridge/panel_count/state", str(panel_count), retain=True)
 
     def _publish_runtime_heartbeat(self, now: datetime | None = None) -> None:
         timestamp = (datetime.now(timezone.utc) if now is None else now).isoformat()
@@ -984,7 +1019,8 @@ class Bridge:
         self.mqtt.publish(f"{self.topic_prefix}/{name}/state", value, retain=True)
 
     def _thermostat_name(self, thermostat: ThermostatState) -> str:
-        room_name = self.room_names.get(thermostat.room_id, thermostat.room_id or thermostat.mac.hex())
+        with self._state_lock:
+            room_name = self.room_names.get(thermostat.room_id, thermostat.room_id or thermostat.mac.hex())
         return f"{room_name} 温控面板"
 
     def _thermostat_topic(self, thermostat: ThermostatState) -> str:
@@ -993,10 +1029,12 @@ class Bridge:
     def _thermostat_active_hvac_mode(self) -> str:
         # Child panels only enable a room. The central technology system owns
         # the actual HVAC mode, so reflect that mode on each child Climate card.
-        return CLIMATE_MODE_FOR_SYSTEM_MODE.get(self.state.mode or "", "heat")
+        with self._state_lock:
+            mode = self.state.mode
+        return CLIMATE_MODE_FOR_SYSTEM_MODE.get(mode or "", "heat")
 
     def _refresh_thermostat_climate_modes(self) -> None:
-        for thermostat in self.thermostats.values():
+        for thermostat in self._thermostat_snapshot():
             self._publish_thermostat_discovery(thermostat)
             self._publish_thermostat_state(thermostat)
 
@@ -1004,9 +1042,12 @@ class Bridge:
         if self.thermostat_offline_after == 0:
             return
         now = time.monotonic()
-        for thermostat in self.thermostats.values():
-            if thermostat.available and now - thermostat.last_seen >= self.thermostat_offline_after:
-                thermostat.available = False
+        for thermostat in self._thermostat_snapshot():
+            with self._state_lock:
+                stale = thermostat.available and now - thermostat.last_seen >= self.thermostat_offline_after
+                if stale:
+                    thermostat.available = False
+            if stale:
                 topic = self._thermostat_topic(thermostat)
                 self.mqtt.publish(f"{topic}/availability", "offline", retain=True)
                 LOG.warning("thermostat %s has stopped reporting; marked unavailable", thermostat.mac.hex())
@@ -1056,16 +1097,19 @@ class Bridge:
     def _publish_automation_measurements(self, thermostat: ThermostatState) -> None:
         if not self.automation_filter_enabled:
             return
-        measurements = self._automation_measurements.get(thermostat.mac.hex())
-        if measurements is None or measurements.temperature is None or measurements.humidity is None:
-            return
+        with self._state_lock:
+            measurements = self._automation_measurements.get(thermostat.mac.hex())
+            if measurements is None or measurements.temperature is None or measurements.humidity is None:
+                return
+            temperature = measurements.temperature
+            humidity = measurements.humidity
         topic = self._thermostat_topic(thermostat)
         self.mqtt.publish(
             f"{topic}/automation/current_temperature",
-            f"{measurements.temperature:g}",
+            f"{temperature:g}",
             retain=True,
         )
-        self.mqtt.publish(f"{topic}/automation/humidity", str(measurements.humidity), retain=True)
+        self.mqtt.publish(f"{topic}/automation/humidity", str(humidity), retain=True)
 
     def _publish_thermostat_discovery(self, thermostat: ThermostatState) -> None:
         mac_hex = thermostat.mac.hex()
@@ -1073,9 +1117,10 @@ class Bridge:
         thermostat_name = self._thermostat_name(thermostat)
         active_mode = self._thermostat_active_hvac_mode()
         fingerprint = (thermostat_name, active_mode)
-        if self._thermostat_discovery_fingerprints.get(mac_hex) == fingerprint:
-            return
-        self._thermostat_discovery_fingerprints[mac_hex] = fingerprint
+        with self._state_lock:
+            if self._thermostat_discovery_fingerprints.get(mac_hex) == fingerprint:
+                return
+            self._thermostat_discovery_fingerprints[mac_hex] = fingerprint
         device = {"identifiers": [f"moorgen_thermostat_{mac_hex}"], "name": thermostat_name}
         self._publish_automation_measurement_discovery(mac_hex, topic, device)
         # The panel has only enable/disable, but Climate provides the compact
@@ -1223,22 +1268,28 @@ class Bridge:
         self._refresh_conditional_entities()
 
     def _mode_select_options(self) -> tuple[str, ...]:
-        if not self.state.can_change_mode and self.state.mode:
-            return (MODE_LABELS.get(self.state.mode, self.state.mode),)
+        with self._state_lock:
+            can_change_mode = self.state.can_change_mode
+            mode = self.state.mode
+        if not can_change_mode and mode:
+            return (MODE_LABELS.get(mode, mode),)
         return tuple(MODE_LABELS.values())
 
     def _mode_switch_condition(self) -> str:
-        if self.state.power == "OFF":
+        with self._state_lock:
+            power = self.state.power
+        if power == "OFF":
             return "可以切换模式"
-        if self.state.power == "ON":
+        if power == "ON":
             return "请先关闭科技系统"
         return "等待科技系统状态"
 
     def _publish_mode_discovery(self, force: bool = False) -> None:
         options = self._mode_select_options()
-        if not force and self._mode_discovery_options == options:
-            return
-        self._mode_discovery_options = options
+        with self._state_lock:
+            if not force and self._mode_discovery_options == options:
+                return
+            self._mode_discovery_options = options
         self._discovery("select", "mode", {
             "availability_topic": f"{self.topic_prefix}/availability",
             "name": "科技系统模式",
@@ -1257,7 +1308,9 @@ class Bridge:
             retain=True,
         )
         winter_topic = f"{self.discovery_prefix}/switch/moorgen_tech_system/winter_humidifier/config"
-        if not self.state.show_winter_humidifier:
+        with self._state_lock:
+            show_winter_humidifier = self.state.show_winter_humidifier
+        if not show_winter_humidifier:
             # An empty retained MQTT discovery payload removes the entity from HA.
             self.mqtt.publish(winter_topic, b"", retain=True)
             return

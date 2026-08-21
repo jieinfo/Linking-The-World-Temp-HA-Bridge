@@ -44,3 +44,8 @@ automation_filter:
   # Only publish a new derived value after at least this much change.
   temperature_deadband: 0.2
   humidity_deadband: 2
+
+# Raw YAS HCP frames are useful during protocol investigation but can be noisy
+# on a busy installation. Enable only while collecting diagnostics.
+diagnostics:
+  publish_raw_status: false
