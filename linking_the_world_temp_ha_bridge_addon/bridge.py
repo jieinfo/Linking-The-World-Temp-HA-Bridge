@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import socket
@@ -39,6 +41,8 @@ DEFAULT_COMMAND_CONFIRMATION_TIMEOUT = 8.0
 DEFAULT_AUTOMATION_FILTER_SAMPLES = 3
 DEFAULT_AUTOMATION_TEMPERATURE_DEADBAND = 0.2
 DEFAULT_AUTOMATION_HUMIDITY_DEADBAND = 2
+DEFAULT_MQTT_HEARTBEAT_INTERVAL = 30.0
+DEFAULT_HEALTH_MAX_AGE = 75.0
 THERMOSTAT_MIN_TEMPERATURE = 16
 THERMOSTAT_MAX_TEMPERATURE = 28
 MAX_YASHCP_PAYLOAD_LENGTH = 16_384
@@ -74,6 +78,82 @@ CLIMATE_MODE_FOR_SYSTEM_MODE = {
     "ventilation": "fan_only",
     "dehumidify": "dry",
 }
+
+
+class LivenessMonitor:
+    """Expose forward progress without treating a disconnected host as unhealthy."""
+
+    def __init__(self, max_age: float = DEFAULT_HEALTH_MAX_AGE) -> None:
+        self.max_age = max_age
+        self._lock = threading.Lock()
+        self._last_tick = time.monotonic()
+        self._phase = "starting"
+
+    def touch(self, phase: str, now: float | None = None) -> None:
+        with self._lock:
+            self._last_tick = time.monotonic() if now is None else now
+            self._phase = phase
+
+    def snapshot(self, now: float | None = None) -> dict[str, object]:
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            age = max(0.0, current - self._last_tick)
+            phase = self._phase
+        return {
+            "healthy": age <= self.max_age,
+            "phase": phase,
+            "last_tick_age_seconds": round(age, 1),
+        }
+
+
+class HealthEndpoint:
+    """Read-only local endpoint used by the Home Assistant Supervisor watchdog."""
+
+    def __init__(self, monitor: LivenessMonitor, host: str = "0.0.0.0", port: int = 8099) -> None:
+        self.monitor = monitor
+        self.host = host
+        self.port = port
+        self._server: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        monitor = self.monitor
+
+        class RequestHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+                if self.path != "/health":
+                    self.send_error(404)
+                    return
+                snapshot = monitor.snapshot()
+                payload = json.dumps(snapshot, ensure_ascii=False).encode("utf-8")
+                self.send_response(200 if snapshot["healthy"] else 503)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format: str, *args) -> None:
+                LOG.debug("health endpoint: " + format, *args)
+
+        class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+            allow_reuse_address = True
+
+        self._server = ReusableThreadingHTTPServer((self.host, self.port), RequestHandler)
+        self._server.daemon_threads = True
+        self.port = self._server.server_address[1]
+        self._thread = threading.Thread(target=self._server.serve_forever, name="bridge-health", daemon=True)
+        self._thread.start()
+        LOG.info("health endpoint listening on %s:%s", self.host, self.port)
+
+    def stop(self) -> None:
+        if self._server is None:
+            return
+        self._server.shutdown()
+        self._server.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        self._server = None
+        self._thread = None
 
 
 @dataclass(frozen=True)
@@ -445,8 +525,9 @@ class MoorgenClient:
 
 
 class Bridge:
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, liveness_monitor: LivenessMonitor | None = None) -> None:
         self.config = config
+        self.liveness_monitor = liveness_monitor
         host = config["moorgen"]
         self.client = MoorgenClient(
             host["host"],
@@ -534,18 +615,22 @@ class Bridge:
         # MQTT is an independent dependency. connect_async plus loop_start
         # keeps the MC7021 session alive while the broker is unavailable and
         # lets Paho reconnect automatically when it returns.
+        self._touch_liveness("connecting")
         self.mqtt.connect_async(self.mqtt_config["host"], int(self.mqtt_config.get("port", 1883)), 60)
         self.mqtt.loop_start()
         heartbeat_at = 0.0
         availability_at = 0.0
+        mqtt_heartbeat_at = 0.0
         try:
             self._publish_bridge_connection("offline")
             self._set_connection_error("正在连接主机")
             self.mqtt.publish(f"{self.topic_prefix}/availability", "offline", retain=True)
             self.client.connect()
+            self._touch_liveness("waiting_for_status")
             if not self.protocol_verified:
                 self._set_connection_error("等待主机状态验证")
             while not self._stop.wait(1):
+                self._touch_liveness("running")
                 self._assert_controller_healthy()
                 self._expire_pending_commands()
                 if time.monotonic() >= heartbeat_at:
@@ -554,17 +639,26 @@ class Bridge:
                 if time.monotonic() >= availability_at:
                     self._refresh_thermostat_availability()
                     availability_at = time.monotonic() + 15
+                if time.monotonic() >= mqtt_heartbeat_at:
+                    self._publish_runtime_heartbeat()
+                    mqtt_heartbeat_at = time.monotonic() + DEFAULT_MQTT_HEARTBEAT_INTERVAL
         except (ConnectionError, OSError, TimeoutError) as error:
+            self._touch_liveness("retrying")
             self._publish_bridge_connection("offline")
             self._set_connection_error(self._describe_connection_error(error))
             self.mqtt.publish(f"{self.topic_prefix}/availability", "offline", retain=True)
             raise
         finally:
+            self._touch_liveness("session_stopped")
             self._publish_bridge_connection("offline")
             self.mqtt.publish(f"{self.topic_prefix}/availability", "offline", retain=True)
             self.mqtt.loop_stop()
             self.mqtt.disconnect()
             self.client.close()
+
+    def _touch_liveness(self, phase: str) -> None:
+        if self.liveness_monitor is not None:
+            self.liveness_monitor.touch(phase)
 
     @staticmethod
     def _describe_connection_error(error: Exception) -> str:
@@ -584,6 +678,7 @@ class Bridge:
             self._publish_thermostat_discovery(thermostat)
             self._publish_thermostat_state(thermostat)
         self._publish_bridge_diagnostics()
+        self._publish_runtime_heartbeat()
         client.publish(
             f"{self.topic_prefix}/availability",
             "online" if self.protocol_verified else "offline",
@@ -877,6 +972,10 @@ class Bridge:
         self.mqtt.publish(f"{self.topic_prefix}/bridge/last_command/state", self.last_command_status, retain=True)
         self.mqtt.publish(f"{self.topic_prefix}/bridge/panel_count/state", str(len(self.thermostats)), retain=True)
 
+    def _publish_runtime_heartbeat(self, now: datetime | None = None) -> None:
+        timestamp = (datetime.now(timezone.utc) if now is None else now).isoformat()
+        self.mqtt.publish(f"{self.topic_prefix}/bridge/heartbeat", timestamp, retain=True)
+
     def _publish_state(self, name: str, value: str) -> None:
         if name == "mode":
             value = MODE_LABELS.get(value, value)
@@ -1088,6 +1187,14 @@ class Bridge:
             "unique_id": "moorgen_tech_system_bridge_connection_error",
             "state_topic": f"{self.topic_prefix}/bridge/connection_error/state",
             "icon": "mdi:lan-disconnect",
+            "device": common["device"],
+        })
+        self._discovery("sensor", "bridge_last_seen", {
+            "name": "Bridge 最近心跳",
+            "unique_id": "moorgen_tech_system_bridge_last_seen",
+            "state_topic": f"{self.topic_prefix}/bridge/heartbeat",
+            "device_class": "timestamp",
+            "icon": "mdi:heart-pulse",
             "device": common["device"],
         })
         self._discovery("sensor", "bridge_last_command", {
