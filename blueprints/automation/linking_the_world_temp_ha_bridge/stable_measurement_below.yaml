@@ -1,0 +1,43 @@
+blueprint:
+  name: Linking The World - 平滑测量值持续低于阈值
+  description: >-
+    使用 Linking The World Temp Bridge 的“自动化温度”或“自动化湿度”实体。
+    仅当平滑后的读数持续低于阈值一段时间后才执行动作。
+  domain: automation
+  input:
+    measurement:
+      name: 平滑测量实体
+      description: 请选择温控面板的“自动化温度”或“自动化湿度”，不要选择原始读数。
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    threshold:
+      name: 阈值
+      selector:
+        number:
+          min: -50
+          max: 100
+          step: 0.1
+          mode: box
+    duration:
+      name: 持续时间
+      description: 读数持续低于阈值多久后才执行动作。
+      default:
+        minutes: 5
+      selector:
+        duration:
+    actions:
+      name: 动作
+      selector:
+        action: {}
+
+mode: single
+
+trigger:
+  - platform: numeric_state
+    entity_id: !input measurement
+    below: !input threshold
+    for: !input duration
+
+action: !input actions
