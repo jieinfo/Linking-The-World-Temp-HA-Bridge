@@ -45,7 +45,8 @@ automation_filter:
   temperature_deadband: 0.2
   humidity_deadband: 2
 
-# Raw YAS HCP frames are useful during protocol investigation but can be noisy
-# on a busy installation. Enable only while collecting diagnostics.
+# Full raw YAS HCP send/receive logs are useful during protocol investigation
+# but can be noisy on a busy installation. Enable only while collecting logs.
 diagnostics:
+  debug: false
   publish_raw_status: false

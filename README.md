@@ -85,7 +85,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install -r requirements.txt
 cp config.example.yaml config.yaml
-python3 bridge.py --config config.yaml --debug
+python3 bridge.py --config config.yaml
 ```
 
 每户若共用同一个 MQTT Broker，必须配置不同的 `mqtt.client_id` 和
@@ -118,6 +118,9 @@ python3 bridge.py --config config.yaml --debug
 - 原始主机状态报文发布在 `moorgen/tech_system/status_raw`，可用于排查
   未知设备或固件差异；它默认关闭，可通过 `diagnostics.publish_raw_status: true`
   临时启用。
+- 默认日志不会打印完整 TCP 十六进制报文。排障时可临时设置
+  `diagnostics.debug: true`，或为独立运行命令追加 `--debug`；完成后应关闭，
+  以免高频状态上报迅速占满日志。
 
 健康端点不提供 Web 控制、配置或密码信息；正常使用无需单独配置端口或心跳。
 

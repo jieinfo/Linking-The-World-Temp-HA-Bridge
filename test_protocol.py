@@ -265,6 +265,15 @@ class ProtocolTests(unittest.TestCase):
             ("moorgen/tech_system/status_raw", '{"raw":"0102"}'),
         )
 
+    def test_diagnostics_debug_must_be_boolean(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+            "diagnostics": {"debug": "yes"},
+        }
+        with self.assertRaisesRegex(ConfigError, "diagnostics.debug"):
+            Bridge(config)
+
     def test_connection_error_diagnostics_describe_login_failures(self):
         self.assertEqual(
             Bridge._describe_connection_error(TimeoutError()),
