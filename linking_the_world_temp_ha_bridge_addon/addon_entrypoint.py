@@ -49,6 +49,7 @@ def load_options() -> dict:
                 "humidity_deadband": int(options.get("automation_humidity_deadband", 2)),
             },
             "diagnostics": {
+                "debug": options.get("debug", False),
                 "publish_raw_status": options.get("publish_raw_status", False),
             },
         }
@@ -67,7 +68,11 @@ def main() -> None:
             bridge: Bridge | None = None
             retry_seconds = 15
             try:
-                bridge = Bridge(load_options(), liveness_monitor=monitor)
+                options = load_options()
+                logging.getLogger().setLevel(
+                    logging.DEBUG if options["diagnostics"]["debug"] else logging.INFO
+                )
+                bridge = Bridge(options, liveness_monitor=monitor)
                 bridge.run()
             except ConfigError as error:
                 monitor.touch("waiting_for_configuration")

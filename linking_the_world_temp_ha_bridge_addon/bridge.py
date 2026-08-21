@@ -136,6 +136,11 @@ def _config_mqtt_text(value: object, name: str, topic: bool = False) -> None:
         raise ConfigError(f"配置项 {name} 不能包含 MQTT 通配符 # 或 +")
 
 
+def _config_bool(value: object, name: str) -> None:
+    if not isinstance(value, bool):
+        raise ConfigError(f"配置项 {name} 必须是 true 或 false")
+
+
 def validate_bridge_config(config: dict) -> None:
     if not isinstance(config, dict):
         raise ConfigError("配置根节点必须是对象")
@@ -174,6 +179,11 @@ def validate_bridge_config(config: dict) -> None:
         raise ConfigError("配置项 automation_filter.samples 不能大于 15")
     _config_number(automation_filter.get("temperature_deadband", DEFAULT_AUTOMATION_TEMPERATURE_DEADBAND), "automation_filter.temperature_deadband", 0)
     _config_number(automation_filter.get("humidity_deadband", DEFAULT_AUTOMATION_HUMIDITY_DEADBAND), "automation_filter.humidity_deadband", 0, integer=True)
+    diagnostics = config.get("diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        raise ConfigError("配置项 diagnostics 必须是对象")
+    _config_bool(diagnostics.get("debug", False), "diagnostics.debug")
+    _config_bool(diagnostics.get("publish_raw_status", False), "diagnostics.publish_raw_status")
 
 
 class LivenessMonitor:
@@ -1584,11 +1594,16 @@ def main() -> None:
     parser.add_argument("--config", default="config.yaml", type=Path)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
-        Bridge(load_config(args.config)).run()
+        config = load_config(args.config)
     except ConfigError as error:
         parser.error(f"配置错误：{error}")
+    diagnostics = config.get("diagnostics", {})
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug or diagnostics.get("debug", False) else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    Bridge(config).run()
 
 
 if __name__ == "__main__":
