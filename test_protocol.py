@@ -2,6 +2,7 @@ import struct
 import time
 import unittest
 import json
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 from bridge import (
@@ -13,6 +14,7 @@ from bridge import (
     COMMAND_WINTER_HUMIDIFIER,
     CLIMATE_MODE_FOR_SYSTEM_MODE,
     Bridge,
+    LivenessMonitor,
     decode_text,
     decode_thermostat_status,
     decode_tech_system_status,
@@ -147,6 +149,7 @@ class ProtocolTests(unittest.TestCase):
 
         connection_topic = "homeassistant/binary_sensor/moorgen_tech_system/bridge_connection/config"
         error_topic = "homeassistant/sensor/moorgen_tech_system/bridge_connection_error/config"
+        heartbeat_topic = "homeassistant/sensor/moorgen_tech_system/bridge_last_seen/config"
         connection_payload = next(
             json.loads(call.args[1])
             for call in bridge.mqtt.publish.call_args_list
@@ -157,8 +160,38 @@ class ProtocolTests(unittest.TestCase):
             for call in bridge.mqtt.publish.call_args_list
             if call.args[0] == error_topic
         )
+        heartbeat_payload = next(
+            json.loads(call.args[1])
+            for call in bridge.mqtt.publish.call_args_list
+            if call.args[0] == heartbeat_topic
+        )
         self.assertNotIn("availability_topic", connection_payload)
         self.assertNotIn("availability_topic", error_payload)
+        self.assertNotIn("availability_topic", heartbeat_payload)
+        self.assertEqual(heartbeat_payload["device_class"], "timestamp")
+
+    def test_liveness_monitor_tracks_forward_progress_without_host_state(self):
+        monitor = LivenessMonitor(max_age=10)
+        monitor.touch("waiting_to_retry", now=100)
+        self.assertEqual(
+            monitor.snapshot(now=109),
+            {"healthy": True, "phase": "waiting_to_retry", "last_tick_age_seconds": 9},
+        )
+        self.assertFalse(monitor.snapshot(now=111)["healthy"])
+
+    def test_runtime_heartbeat_is_a_retained_utc_timestamp(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+        }
+        bridge = Bridge(config)
+        bridge.mqtt.publish = MagicMock()
+        bridge._publish_runtime_heartbeat(datetime(2026, 8, 21, 6, 0, tzinfo=timezone.utc))
+        bridge.mqtt.publish.assert_called_once_with(
+            "moorgen/tech_system/bridge/heartbeat",
+            "2026-08-21T06:00:00+00:00",
+            retain=True,
+        )
 
     def test_connection_error_diagnostics_describe_login_failures(self):
         self.assertEqual(
