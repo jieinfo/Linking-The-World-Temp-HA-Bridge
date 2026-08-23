@@ -60,6 +60,7 @@ from .protocol import (
     decode_thermostat_status,
     iter_tlvs,
     parse_device_mac,
+    preserve_valid_thermostat_measurements,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -587,9 +588,24 @@ class LinkingTempHub:
         thermostat = decode_thermostat_status(body, self.tech_system_mac)
         if thermostat is not None:
             mac_hex = thermostat.mac.hex()
-            is_new = mac_hex not in self.thermostats
+            previous = self.thermostats.get(mac_hex)
+            is_new = previous is None
+            reported_temperature = thermostat.current_temperature
+            reported_humidity = thermostat.humidity
+            measurements_valid = preserve_valid_thermostat_measurements(
+                thermostat, previous
+            )
+            if not measurements_valid:
+                _LOGGER.debug(
+                    "Ignored implausible thermostat measurements: mac=%s "
+                    "temperature=%s humidity=%s",
+                    mac_hex,
+                    reported_temperature,
+                    reported_humidity,
+                )
             self.thermostats[mac_hex] = thermostat
-            self._update_filtered(thermostat)
+            if measurements_valid:
+                self._update_filtered(thermostat)
             self._confirm_pending(
                 f"thermostat_{mac_hex}",
                 {
