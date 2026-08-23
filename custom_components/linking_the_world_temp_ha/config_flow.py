@@ -10,6 +10,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     CONF_ALLOW_CONTROL,
@@ -58,27 +59,40 @@ def _validate_mac(value: str) -> str:
     return parse_device_mac(value).hex()
 
 
+def _normalize_connection_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize fields after the frontend submits the form."""
+    normalized = dict(data)
+    normalized[CONF_HOST] = _validate_host(normalized[CONF_HOST])
+    normalized[CONF_CLIENT_ID] = _validate_client_id(normalized[CONF_CLIENT_ID])
+    normalized[CONF_TECH_SYSTEM_MAC] = _validate_mac(
+        normalized[CONF_TECH_SYSTEM_MAC]
+    )
+    return normalized
+
+
 def _connection_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     defaults = defaults or {}
     return vol.Schema(
         {
             vol.Required(
                 CONF_HOST, default=defaults.get(CONF_HOST, "")
-            ): _validate_host,
+            ): cv.string,
             vol.Required(
                 CONF_PORT, default=defaults.get(CONF_PORT, DEFAULT_PORT)
             ): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
             vol.Required(
                 CONF_USERNAME, default=defaults.get(CONF_USERNAME, DEFAULT_USERNAME)
-            ): str,
-            vol.Required(CONF_PASSWORD, default=defaults.get(CONF_PASSWORD, "")): str,
+            ): cv.string,
+            vol.Required(
+                CONF_PASSWORD, default=defaults.get(CONF_PASSWORD, "")
+            ): cv.string,
             vol.Required(
                 CONF_CLIENT_ID, default=defaults.get(CONF_CLIENT_ID, DEFAULT_CLIENT_ID)
-            ): _validate_client_id,
+            ): cv.string,
             vol.Required(
                 CONF_TECH_SYSTEM_MAC,
                 default=defaults.get(CONF_TECH_SYSTEM_MAC, DEFAULT_TECH_SYSTEM_MAC),
-            ): _validate_mac,
+            ): cv.string,
         }
     )
 
@@ -107,11 +121,9 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            unique_id = f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
-            await self.async_set_unique_id(unique_id)
-            self._abort_if_unique_id_configured()
             try:
-                await _async_validate_connection(user_input)
+                normalized = _normalize_connection_data(user_input)
+                await _async_validate_connection(normalized)
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except (ValueError, vol.Invalid):
@@ -122,9 +134,12 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 errors["base"] = "unknown"
             else:
+                unique_id = f"{normalized[CONF_HOST]}:{normalized[CONF_PORT]}"
+                await self.async_set_unique_id(unique_id)
+                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=f"Linking The World Temp HA ({user_input[CONF_HOST]})",
-                    data=user_input,
+                    title=f"Linking The World Temp HA ({normalized[CONF_HOST]})",
+                    data=normalized,
                 )
         return self.async_show_form(
             step_id="user",
@@ -140,7 +155,8 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                await _async_validate_connection(user_input)
+                normalized = _normalize_connection_data(user_input)
+                await _async_validate_connection(normalized)
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except (ValueError, vol.Invalid):
@@ -151,7 +167,7 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 errors["base"] = "unknown"
             else:
-                unique_id = f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
+                unique_id = f"{normalized[CONF_HOST]}:{normalized[CONF_PORT]}"
                 existing = await self.async_set_unique_id(
                     unique_id, raise_on_progress=False
                 )
@@ -159,9 +175,9 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_abort(reason="already_configured")
                 return self.async_update_reload_and_abort(
                     entry,
-                    title=f"Linking The World Temp HA ({user_input[CONF_HOST]})",
+                    title=f"Linking The World Temp HA ({normalized[CONF_HOST]})",
                     unique_id=unique_id,
-                    data_updates=user_input,
+                    data_updates=normalized,
                 )
         return self.async_show_form(
             step_id="reconfigure",

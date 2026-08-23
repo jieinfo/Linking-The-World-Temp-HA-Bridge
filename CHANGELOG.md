@@ -1,5 +1,10 @@
 # Linking The World Temp HA changelog
 
+## 0.1.1
+
+- 修复 Home Assistant 2026.8 中配置向导无法加载并返回 500 的问题。
+- 将配置表单改为前端可序列化的标准字段，并在提交后继续严格校验主机地址、客户端 ID 与总控 MAC。
+
 ## 0.1.0
 
 - 新增可通过 HACS 安装的原生 Home Assistant 集成。
