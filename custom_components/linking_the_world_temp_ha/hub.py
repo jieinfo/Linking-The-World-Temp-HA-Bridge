@@ -16,6 +16,13 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 
+from .command_queue import (
+    STATUS_POLL_INTERVAL,
+    PendingCommand,
+    QueuedCommand,
+    coalesce_latest,
+    replacement_is_ready,
+)
 from .const import (
     CONF_ALLOW_CONTROL,
     CONF_CLIENT_ID,
@@ -56,31 +63,6 @@ from .protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-
-@dataclass
-class PendingCommand:
-    """A sent command awaiting a matching state report."""
-
-    label: str
-    target: str
-    expected: dict[str, str]
-    deadline: float
-    mac: bytes
-    command: int
-    value: int | None
-
-
-@dataclass(frozen=True)
-class QueuedCommand:
-    """The latest thermostat temperature requested during confirmation."""
-
-    label: str
-    target: str
-    expected: dict[str, str]
-    mac: bytes
-    command: int
-    value: int | None
 
 
 @dataclass
@@ -337,6 +319,8 @@ class LinkingTempHub:
                 raise ConnectionError(
                     f"MC7021 has been silent for {now - client.last_received_at:.0f} seconds"
                 )
+            self._promote_superseded(now)
+            await self._async_poll_pending_status(now)
             self._expire_pending(now)
             await self._async_dispatch_queued()
             if now >= heartbeat_at:
@@ -346,7 +330,9 @@ class LinkingTempHub:
                 self._refresh_thermostat_availability(now)
                 availability_at = now + 15
             try:
-                await asyncio.wait_for(self._stop.wait(), 1)
+                await asyncio.wait_for(
+                    self._stop.wait(), 0.25 if self._queued else 1
+                )
             except asyncio.TimeoutError:
                 pass
 
@@ -386,10 +372,23 @@ class LinkingTempHub:
                     raise HomeAssistantError(
                         f"仍在等待主机确认: {self._pending[target].label}"
                     )
-                self._queued[target] = QueuedCommand(
+                now = time.monotonic()
+                pending = self._pending[target]
+                replacement = QueuedCommand(
                     label, target, expected, mac, command, value
                 )
-                self.last_command_status = f"queued:{label}"
+                queued = coalesce_latest(
+                    pending, self._queued.get(target), replacement, now
+                )
+                if queued is None:
+                    self._queued.pop(target, None)
+                    self.last_command_status = f"waiting:{pending.label}"
+                else:
+                    self._queued[target] = queued
+                    pending.next_status_poll_at = min(
+                        pending.next_status_poll_at, now + 0.5
+                    )
+                    self.last_command_status = f"queued:{label}"
                 self._notify()
                 return
             now = time.monotonic()
@@ -397,11 +396,18 @@ class LinkingTempHub:
                 remaining = self.command_min_interval - (now - self._last_command_at)
                 if remaining > 0:
                     await asyncio.sleep(remaining)
+            now = time.monotonic()
             pending = PendingCommand(
                 label,
                 target,
                 expected,
-                time.monotonic() + self.command_confirmation_timeout,
+                now,
+                now + self.command_confirmation_timeout,
+                now
+                + min(
+                    STATUS_POLL_INTERVAL,
+                    max(0.5, self.command_confirmation_timeout / 2),
+                ),
                 mac,
                 command,
                 value,
@@ -439,7 +445,57 @@ class LinkingTempHub:
             _LOGGER.warning("Queued command %s was not sent: %s", queued.label, error)
             self._notify()
 
+    def _promote_superseded(self, now: float) -> None:
+        """Release superseded intermediate values after a short quiet period."""
+        ready = [
+            target
+            for target, queued in self._queued.items()
+            if (pending := self._pending.get(target)) is not None
+            and queued.promote_at < pending.deadline
+            and replacement_is_ready(pending, queued, now)
+        ]
+        for target in ready:
+            pending = self._pending.pop(target)
+            queued = self._queued[target]
+            self.last_command_status = f"superseded:{pending.label}"
+            _LOGGER.info(
+                "Superseded intermediate command; dispatching latest value: "
+                "label=%s target=%s previous=%s latest=%s waited=%.1fs",
+                pending.label,
+                target,
+                pending.expected,
+                queued.expected,
+                now - pending.sent_at,
+            )
+        if ready:
+            self._notify()
+
+    async def _async_poll_pending_status(self, now: float) -> None:
+        """Request a fresh status report while commands await confirmation."""
+        due = [
+            pending
+            for pending in self._pending.values()
+            if now >= pending.next_status_poll_at and now < pending.deadline
+        ]
+        if not due or self._client is None:
+            return
+        await self._client.request_status()
+        for pending in due:
+            pending.next_status_poll_at = now + STATUS_POLL_INTERVAL
+        _LOGGER.debug(
+            "Requested MC7021 status for pending confirmations: targets=%s",
+            [pending.target for pending in due],
+        )
+
     def _confirm_pending(self, target: str, actual: dict[str, str | None]) -> None:
+        queued = self._queued.get(target)
+        if queued is not None and all(
+            actual.get(key) == value for key, value in queued.expected.items()
+        ):
+            self._pending.pop(target, None)
+            self._queued.pop(target, None)
+            self.last_command_status = f"confirmed:{queued.label}"
+            return
         pending = self._pending.get(target)
         if pending is None or not all(
             actual.get(key) == value for key, value in pending.expected.items()
@@ -459,13 +515,22 @@ class LinkingTempHub:
             if target in self._queued:
                 self.last_command_status = f"timeout_continuing:{pending.label}"
                 _LOGGER.warning(
-                    "Command confirmation timed out; continuing latest queued value: %s",
+                    "Command confirmation timed out; continuing latest queued value: "
+                    "label=%s target=%s expected=%s waited=%.1fs",
                     pending.label,
+                    target,
+                    pending.expected,
+                    now - pending.sent_at,
                 )
             else:
                 self.last_command_status = f"timeout:{pending.label}"
                 _LOGGER.error(
-                    "MC7021 command confirmation timed out: %s", pending.label
+                    "MC7021 command confirmation timed out: label=%s target=%s "
+                    "expected=%s waited=%.1fs",
+                    pending.label,
+                    target,
+                    pending.expected,
+                    now - pending.sent_at,
                 )
         if expired:
             self._notify()
