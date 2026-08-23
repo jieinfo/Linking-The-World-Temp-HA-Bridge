@@ -21,7 +21,6 @@ from .command_queue import (
     PendingCommand,
     QueuedCommand,
     coalesce_latest,
-    replacement_is_ready,
     temperature_retry_is_allowed,
 )
 from .const import (
@@ -322,7 +321,6 @@ class LinkingTempHub:
                 raise ConnectionError(
                     f"MC7021 has been silent for {now - client.last_received_at:.0f} seconds"
                 )
-            self._promote_superseded(now)
             await self._async_poll_pending_status(now)
             await self._async_expire_pending(now)
             await self._async_dispatch_queued()
@@ -375,22 +373,18 @@ class LinkingTempHub:
                     raise HomeAssistantError(
                         f"仍在等待主机确认: {self._pending[target].label}"
                     )
-                now = time.monotonic()
                 pending = self._pending[target]
                 replacement = QueuedCommand(
                     label, target, expected, mac, command, value
                 )
                 queued = coalesce_latest(
-                    pending, self._queued.get(target), replacement, now
+                    pending, self._queued.get(target), replacement
                 )
                 if queued is None:
                     self._queued.pop(target, None)
                     self.last_command_status = f"waiting:{pending.label}"
                 else:
                     self._queued[target] = queued
-                    pending.next_status_poll_at = min(
-                        pending.next_status_poll_at, now + 0.5
-                    )
                     self.last_command_status = f"queued:{label}"
                 self._notify()
                 return
@@ -448,31 +442,6 @@ class LinkingTempHub:
             _LOGGER.warning("Queued command %s was not sent: %s", queued.label, error)
             self._notify()
 
-    def _promote_superseded(self, now: float) -> None:
-        """Release superseded intermediate values after a short quiet period."""
-        ready = [
-            target
-            for target, queued in self._queued.items()
-            if (pending := self._pending.get(target)) is not None
-            and queued.promote_at < pending.deadline
-            and replacement_is_ready(pending, queued, now)
-        ]
-        for target in ready:
-            pending = self._pending.pop(target)
-            queued = self._queued[target]
-            self.last_command_status = f"superseded:{pending.label}"
-            _LOGGER.info(
-                "Superseded intermediate command; dispatching latest value: "
-                "label=%s target=%s previous=%s latest=%s waited=%.1fs",
-                pending.label,
-                target,
-                pending.expected,
-                queued.expected,
-                now - pending.sent_at,
-            )
-        if ready:
-            self._notify()
-
     async def _async_poll_pending_status(self, now: float) -> None:
         """Request a fresh status report while commands await confirmation."""
         due = [
@@ -491,14 +460,6 @@ class LinkingTempHub:
         )
 
     def _confirm_pending(self, target: str, actual: dict[str, str | None]) -> None:
-        queued = self._queued.get(target)
-        if queued is not None and all(
-            actual.get(key) == value for key, value in queued.expected.items()
-        ):
-            self._pending.pop(target, None)
-            self._queued.pop(target, None)
-            self.last_command_status = f"confirmed:{queued.label}"
-            return
         pending = self._pending.get(target)
         if pending is None or not all(
             actual.get(key) == value for key, value in pending.expected.items()
