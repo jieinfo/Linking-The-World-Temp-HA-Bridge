@@ -1,0 +1,429 @@
+"""Async MC7021 YAS HCP protocol implementation."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import struct
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+from .const import DEFAULT_CLIENT_ID, MODE_VALUES, SCENE_VALUES
+
+_LOGGER = logging.getLogger(__name__)
+
+MAGIC = b"dooyashcp"
+VERSION = 1
+TRAILER = b"#"
+MAX_PAYLOAD_LENGTH = 16_384
+TECH_SYSTEM_MAC = bytes.fromhex("ff00ffffffff00ff")
+
+CLIENT_PUBLIC_KEY = b"""-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCbubcnMbVxGmjp2Sc22azesb08
+T1MlidtdZpEJYG6OL/PMhwV4z+B/Trf1aQ5G560/4Xs9f2Vgox36DSUs6pvYOql+
+Fjc/WfyEB80l5op4M7AhblPr171spbbxkF4Gk2S8DWlf0YouBl3XDk0ZaW/6QArD
+z/tjVw5AVVI7+stdPQIDAQAB
+-----END PUBLIC KEY-----
+""".rstrip(b"\n")
+
+COMMAND_POWER_OFF = 1
+COMMAND_POWER_ON = 2
+COMMAND_MODE = 3
+COMMAND_SCENE = 4
+COMMAND_WINTER_HUMIDIFIER = 5
+
+MODE_NAMES = {value: name for name, value in MODE_VALUES.items()}
+SCENE_NAMES = {value: name for name, value in SCENE_VALUES.items()}
+
+
+class ProtocolError(Exception):
+    """Base protocol error."""
+
+
+class CannotConnect(ProtocolError):
+    """The controller cannot be reached or did not complete the handshake."""
+
+
+@dataclass(frozen=True)
+class YasHcpFrame:
+    """Decoded YAS HCP frame."""
+
+    kind: int
+    opcode: int
+    sequence: int
+    body: bytes
+
+    def encode(self) -> bytes:
+        header = MAGIC + bytes((VERSION, self.kind, self.opcode))
+        header += struct.pack("<HH", self.sequence, len(self.body))
+        payload = header + self.body + TRAILER
+        return b"#" + struct.pack("<H", len(payload)) + payload
+
+
+class YasHcpDecoder:
+    """Incrementally decode the App's YAS HCP TCP stream."""
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+
+    def feed(self, data: bytes) -> list[YasHcpFrame]:
+        self._buffer.extend(data)
+        output: list[YasHcpFrame] = []
+        while True:
+            start = self._buffer.find(b"#")
+            if start < 0:
+                self._buffer.clear()
+                return output
+            if start:
+                del self._buffer[:start]
+            if len(self._buffer) < 3:
+                return output
+            prefix_length = min(len(MAGIC), len(self._buffer) - 3)
+            if bytes(self._buffer[3 : 3 + prefix_length]) != MAGIC[:prefix_length]:
+                del self._buffer[0]
+                continue
+            if prefix_length < len(MAGIC):
+                return output
+            payload_length = struct.unpack_from("<H", self._buffer, 1)[0]
+            if payload_length > MAX_PAYLOAD_LENGTH:
+                _LOGGER.warning(
+                    "Discarded YAS HCP frame with excessive length: %d", payload_length
+                )
+                del self._buffer[0]
+                continue
+            frame_length = 3 + payload_length
+            if len(self._buffer) < frame_length:
+                return output
+            raw = bytes(self._buffer[3:frame_length])
+            del self._buffer[:frame_length]
+            if (
+                not raw.startswith(MAGIC)
+                or not raw.endswith(TRAILER)
+                or len(raw) < len(MAGIC) + 8
+            ):
+                _LOGGER.warning(
+                    "Discarded malformed YAS HCP payload (%d bytes)", len(raw)
+                )
+                continue
+            body_length = struct.unpack_from("<H", raw, len(MAGIC) + 5)[0]
+            expected_length = len(MAGIC) + 7 + body_length + len(TRAILER)
+            if len(raw) != expected_length:
+                _LOGGER.warning(
+                    "Discarded YAS HCP payload with invalid length (%d bytes)", len(raw)
+                )
+                continue
+            output.append(
+                YasHcpFrame(
+                    kind=raw[len(MAGIC) + 1],
+                    opcode=raw[len(MAGIC) + 2],
+                    sequence=struct.unpack_from("<H", raw, len(MAGIC) + 3)[0],
+                    body=raw[len(MAGIC) + 7 : len(MAGIC) + 7 + body_length],
+                )
+            )
+
+
+@dataclass
+class TechSystemState:
+    """Last verified total-control state."""
+
+    power: str | None = None
+    mode: str | None = None
+    scene: str | None = None
+    winter_humidifier: str | None = None
+
+    @property
+    def can_change_mode(self) -> bool:
+        return self.power == "OFF"
+
+
+@dataclass
+class ThermostatState:
+    """Last verified room thermostat state."""
+
+    mac: bytes
+    room_id: str
+    target_temperature: float | None = None
+    current_temperature: float | None = None
+    power: str | None = None
+    humidity: int | None = None
+    last_seen: float = 0.0
+    available: bool = False
+
+
+def parse_device_mac(value: str) -> bytes:
+    normalized = value.replace(":", "").replace("-", "").strip()
+    try:
+        mac = bytes.fromhex(normalized)
+    except ValueError as error:
+        raise ValueError("MAC must contain 16 hexadecimal characters") from error
+    if len(mac) != 8:
+        raise ValueError("MAC must contain 16 hexadecimal characters")
+    return mac
+
+
+def decode_text(value: bytes) -> str:
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return value.decode("gb18030", errors="replace")
+
+
+def tlv(tag: int, value: bytes) -> bytes:
+    return struct.pack("<HH", tag, len(value)) + value
+
+
+def iter_tlvs(data: bytes):
+    offset = 0
+    while offset + 4 <= len(data):
+        tag, length = struct.unpack_from("<HH", data, offset)
+        offset += 4
+        if offset + length > len(data):
+            return
+        yield tag, data[offset : offset + length]
+        offset += length
+
+
+def parse_tlvs(data: bytes) -> dict[int, bytes]:
+    return dict(iter_tlvs(data))
+
+
+def decode_tech_system_status(body: bytes, tech_system_mac: bytes) -> dict[str, str]:
+    fields = parse_tlvs(body)
+    if fields.get(0x0004) != tech_system_mac:
+        return {}
+    state: dict[str, str] = {}
+    if power := fields.get(0x000B):
+        state["power"] = "ON" if power[0] else "OFF"
+    if packed := fields.get(0x000A):
+        if mode := MODE_NAMES.get(packed[0]):
+            state["mode"] = mode
+        if len(packed) > 1 and (scene := SCENE_NAMES.get(packed[1])):
+            state["scene"] = scene
+        if len(packed) > 2:
+            state["winter_humidifier"] = "ON" if packed[2] else "OFF"
+    return state
+
+
+def decode_thermostat_status(
+    body: bytes, tech_system_mac: bytes
+) -> ThermostatState | None:
+    fields = parse_tlvs(body)
+    mac = fields.get(0x0004)
+    packed = fields.get(0x000A)
+    power = fields.get(0x000B)
+    if (
+        not mac
+        or fields.get(0x0075) != tech_system_mac
+        or len(packed or b"") != 5
+        or not power
+    ):
+        return None
+    return ThermostatState(
+        mac=mac,
+        room_id=decode_text(fields.get(0x0030, b"")),
+        target_temperature=packed[0] // 2,
+        current_temperature=int.from_bytes(packed[1:3], "little") / 10,
+        power="ON" if power[0] else "OFF",
+        humidity=packed[3],
+        last_seen=time.monotonic(),
+        available=True,
+    )
+
+
+FrameCallback = Callable[[YasHcpFrame], Awaitable[None] | None]
+StatusCallback = Callable[[bytes], Awaitable[None] | None]
+
+
+class AsyncMoorgenClient:
+    """One authenticated asynchronous MC7021 connection."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        client_id: str = DEFAULT_CLIENT_ID,
+    ) -> None:
+        if len(client_id) != 16 or any(
+            char not in "0123456789abcdefABCDEF" for char in client_id
+        ):
+            raise ValueError("client_id must contain 16 hexadecimal characters")
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.client_id = client_id.lower()
+        self.on_frame: FrameCallback | None = None
+        self.on_status: StatusCallback | None = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._reader_task: asyncio.Task[None] | None = None
+        self._decoder = YasHcpDecoder()
+        self._inbox: asyncio.Queue[YasHcpFrame] = asyncio.Queue()
+        self._write_lock = asyncio.Lock()
+        self._sequence = 0
+        self._ready = False
+        self.last_received_at = 0.0
+        self.reader_error: Exception | None = None
+
+    @property
+    def is_ready(self) -> bool:
+        return self._ready
+
+    @property
+    def reader_alive(self) -> bool:
+        return self._reader_task is not None and not self._reader_task.done()
+
+    async def connect(self) -> None:
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port), timeout=8
+            )
+            self.last_received_at = time.monotonic()
+            self.reader_error = None
+            self._reader_task = asyncio.create_task(
+                self._read_loop(), name="linking-temp-mc7021-reader"
+            )
+            await self._send_hello()
+            await self._wait_for(1, 3, 8)
+            await self._send_login()
+            await self._wait_for(2, 6, 8)
+            await self._send_initial_queries()
+            self._ready = True
+        except (OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as error:
+            await self.close()
+            raise CannotConnect(str(error)) from error
+
+    async def close(self) -> None:
+        self._ready = False
+        task = self._reader_task
+        self._reader_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._writer is not None:
+            self._writer.close()
+            try:
+                await self._writer.wait_closed()
+            except OSError:
+                pass
+        self._reader = None
+        self._writer = None
+
+    async def send_command(
+        self, mac: bytes, command: int, value: int | None = None
+    ) -> None:
+        if not self._ready:
+            raise ConnectionError("MC7021 session is not ready")
+        body = tlv(0x0010, b"\x01") + tlv(0x0004, mac) + tlv(0x0009, bytes((command,)))
+        if value is not None:
+            body += tlv(0x000A, bytes((value,)))
+        await self._send(4, 9, body)
+
+    async def heartbeat(self) -> None:
+        if self._ready:
+            await self._send(6, 0x0E, b"")
+
+    async def request_status(self) -> None:
+        if self._ready:
+            await self._send(3, 7, tlv(0x000F, b"\x21"))
+
+    async def _send_hello(self) -> None:
+        body = bytes.fromhex("12020f01") + CLIENT_PUBLIC_KEY
+        body += bytes.fromhex("13021000") + self.client_id.encode("ascii")
+        await self._send(1, 1, body)
+
+    async def _send_login(self) -> None:
+        await self._send(
+            2,
+            4,
+            tlv(0x000C, self.username.encode()) + tlv(0x000D, self.password.encode()),
+        )
+
+    async def _send_initial_queries(self) -> None:
+        for category in (0x0B, 0x1F, 0x01, 0x11, 0x09, 0x0D, 0x03, 0x07, 0x1B):
+            await self._send(3, 7, tlv(0x000F, bytes((category,))))
+        await self._send(
+            3,
+            7,
+            tlv(0x000F, b"\x17") + tlv(0x0077, self.client_id.encode("ascii")),
+        )
+        await self.request_status()
+
+    async def _send(self, kind: int, opcode: int, body: bytes) -> None:
+        if self._writer is None:
+            raise ConnectionError("MC7021 socket is not connected")
+        async with self._write_lock:
+            frame = YasHcpFrame(kind, opcode, self._sequence, body)
+            self._sequence = (self._sequence + 1) & 0xFFFF
+            self._writer.write(frame.encode())
+            await self._writer.drain()
+            _LOGGER.debug(
+                "Sent MC7021 kind=%02x opcode=%02x seq=%d body=%s",
+                kind,
+                opcode,
+                frame.sequence,
+                body.hex(),
+            )
+
+    async def _wait_for(self, kind: int, opcode: int, timeout: float) -> YasHcpFrame:
+        deferred: list[YasHcpFrame] = []
+        deadline = asyncio.get_running_loop().time() + timeout
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"MC7021 did not return kind={kind:#x}, opcode={opcode:#x}"
+                    )
+                try:
+                    frame = await asyncio.wait_for(self._inbox.get(), remaining)
+                except asyncio.TimeoutError as error:
+                    raise TimeoutError(
+                        f"MC7021 did not return kind={kind:#x}, opcode={opcode:#x}"
+                    ) from error
+                if frame.kind == kind and frame.opcode == opcode:
+                    return frame
+                deferred.append(frame)
+        finally:
+            for frame in deferred:
+                self._inbox.put_nowait(frame)
+
+    async def _read_loop(self) -> None:
+        assert self._reader is not None
+        try:
+            while data := await self._reader.read(4096):
+                self.last_received_at = time.monotonic()
+                for frame in self._decoder.feed(data):
+                    _LOGGER.debug(
+                        "Received MC7021 kind=%02x opcode=%02x body=%s",
+                        frame.kind,
+                        frame.opcode,
+                        frame.body.hex(),
+                    )
+                    if self.on_frame is not None:
+                        result = self.on_frame(frame)
+                        if result is not None:
+                            await result
+                    if (
+                        frame.kind == 5
+                        and frame.opcode == 0x0C
+                        and self.on_status is not None
+                    ):
+                        result = self.on_status(frame.body)
+                        if result is not None:
+                            await result
+                    else:
+                        self._inbox.put_nowait(frame)
+            raise ConnectionError("MC7021 closed the TCP stream")
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - preserve any reader failure for reconnect diagnostics.
+            self.reader_error = error
+        finally:
+            self._ready = False

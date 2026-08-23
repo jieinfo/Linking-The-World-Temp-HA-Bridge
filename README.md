@@ -1,10 +1,17 @@
-# Linking The World Temp HA Bridge
+# Linking The World Temp HA
 
 面向 **Linking The World** 小区六恒科技系统的本地 Home Assistant
-桥接项目。系统控制器来自 Moorgen，本项目通过 MC7021 已启用的本地
-`yashcp` TCP/9000 通讯，将六恒总控和各房间子温控面板接入 Home Assistant。
+本地集成项目。系统控制器来自 Moorgen，本项目通过 MC7021 已启用的本地
+`yashcp` TCP/9000 通讯，将六恒总控和各房间子温控面板直接接入 Home Assistant。
 
 整个过程只在局域网内运行：不依赖摩根云、云管理平台或 MT8157 模拟设备。
+
+仓库同时保留原有的 **Linking The World Temp Bridge** 附加组件。新安装推荐使用
+原生集成 **Linking The World Temp HA**：它不需要 MQTT Discovery 或 Mosquitto，
+设备会直接归属于本集成，并可在 Home Assistant 中完成配置、诊断和卸载。
+
+> 不要让原生集成与旧 Bridge 同时连接同一台 MC7021。主机对登录会话和账号并发
+> 有限制，同时运行可能造成 App 或其中一个桥接连接被挤下线。
 
 ## 已支持功能
 
@@ -14,7 +21,7 @@
 - 房间子温控面板的开启/关闭、16-28°C 整度设定温度、实际温度和湿度
 - 面向自动化的平滑温度/湿度实体，以及防抖自动化 Blueprint
 - 子面板按主机实时上报自动发现，数量不限
-- MQTT Discovery、Home Assistant Climate 卡片，以及 HomeKit Bridge 转发
+- 原生 Home Assistant 设备/实体、Climate 卡片，以及 HomeKit Bridge 转发
 - 主机状态确认、断线自动恢复，以及总控连接/最近命令/面板数量诊断实体
 
 子面板的模式由六恒总控统一决定。例如总控处于制冷时，子面板卡片显示
@@ -26,7 +33,37 @@
 和房间温控面板。不同主机型号、未知固件或不同协议结构不应直接用于控制；
 请先以只读模式观察状态上报。
 
-## Home Assistant 附加组件安装
+## 推荐：HACS 原生集成
+
+1. 在 HACS 中打开“自定义存储库”，添加：
+
+   ```text
+   https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
+   ```
+
+   类别选择“集成”。
+2. 安装 **Linking The World Temp HA** 并重启 Home Assistant。
+3. 打开“设置 → 设备与服务 → 添加集成”，搜索
+   **Linking The World Temp HA**。
+4. 填写 MC7021 的局域网 IP、本地主机账号和密码。默认端口是 `9000`；协议客户端
+   ID 和科技系统总控 MAC 没有明确抓包依据时请保持默认值。
+5. 首次连接后，总控立即建立；房间面板会随着主机状态上报自动发现。已发现面板
+   会被持久保存，Home Assistant 重启后先显示为不可用，收到该面板新报文后恢复在线。
+
+建议手机 App 使用 `Test` 账号、原生集成使用 `admin` 账号，避免相同账号的并发会话
+互相影响。主机密码只保存在 Home Assistant 配置条目中，下载诊断信息时会自动脱敏。
+
+### 从旧 Bridge 迁移
+
+1. 停止 **Linking The World Temp Bridge** 附加组件。
+2. 添加并验证原生集成，确认总控和所有房间面板均在线。
+3. 删除旧 Bridge 产生的 MQTT 设备或禁用其实体，避免仪表盘中出现两套同名设备。
+4. 检查自动化、仪表盘和 HomeKit Bridge，将旧 MQTT 实体替换为原生实体。
+
+原生实体的 `entity_id` 由 Home Assistant 在首次添加时生成，无法保证与旧 MQTT 实体
+完全相同，因此迁移不会自动改写现有自动化。
+
+## 保留：Home Assistant 附加组件
 
 在 Home Assistant 的“设置 → 附加组件 → 附加组件商店”添加本仓库：
 
@@ -35,7 +72,8 @@ https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge
 ```
 
 安装 **Linking The World Temp Bridge**，填写主机局域网地址、本地主机账号和 MQTT
-信息。默认使用 HA 的 Mosquitto 附加组件：`core-mosquitto:1883`。
+信息。默认使用 HA 的 Mosquitto 附加组件：`core-mosquitto:1883`。这条旧线路继续保留，
+便于现有用户维护，但新部署建议优先使用上面的原生集成。
 
 首次为新住户配置时，建议：
 
@@ -135,3 +173,7 @@ python3 bridge.py --config config.yaml
 python scripts/sync_addon_bridge.py
 python scripts/sync_addon_bridge.py --check
 ```
+
+原生集成位于 `custom_components/linking_the_world_temp_ha`，它拥有独立的异步协议层，
+不引用旧 Bridge 的 MQTT 运行时。发布原生集成版本时需同步更新 `manifest.json` 的
+`version`；旧附加组件仍使用其自身 `config.yaml` 与 `CHANGELOG.md` 版本号。

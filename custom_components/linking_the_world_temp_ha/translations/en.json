@@ -1,0 +1,75 @@
+{
+  "title": "Linking The World Temp HA",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect the technology-system controller",
+        "description": "Connect to the MC7021 local TCP/9000 service.",
+        "data": {
+          "host": "Controller host",
+          "port": "Controller port",
+          "username": "Local username",
+          "password": "Local password",
+          "client_id": "Protocol client ID",
+          "tech_system_mac": "Technology-system MAC"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure the technology-system controller",
+        "description": "Change the controller address or local credentials without removing existing entities.",
+        "data": {
+          "host": "Controller host",
+          "port": "Controller port",
+          "username": "Local username",
+          "password": "Local password",
+          "client_id": "Protocol client ID",
+          "tech_system_mac": "Technology-system MAC"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect or log in to the controller",
+      "invalid_config": "Invalid client ID or technology-system MAC",
+      "unknown": "Unexpected error; check the Home Assistant log"
+    },
+    "abort": {"already_configured": "This controller is already configured"}
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Runtime and safety settings",
+        "data": {
+          "allow_control": "Allow controls from Home Assistant",
+          "command_min_interval": "Minimum command interval (seconds)",
+          "command_confirmation_timeout": "Command confirmation timeout (seconds)",
+          "controller_silence_timeout": "Controller silence timeout (seconds)",
+          "thermostat_offline_after": "Panel offline timeout (seconds; 0 disables)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "controller_connection": {"name": "Controller connection"},
+      "protocol_verified": {"name": "Protocol compatible"}
+    },
+    "climate": {"room_thermostat": {"name": "Thermostat"}},
+    "select": {
+      "system_mode": {"name": "Operating mode"},
+      "system_scene": {"name": "Scene"}
+    },
+    "sensor": {
+      "connection_error": {"name": "Last connection error"},
+      "protocol_status": {"name": "Protocol status"},
+      "control_permission": {"name": "Control permission"},
+      "last_command": {"name": "Last command"},
+      "panel_count": {"name": "Discovered panel count"},
+      "automation_temperature": {"name": "Automation temperature"},
+      "automation_humidity": {"name": "Automation humidity"}
+    },
+    "switch": {
+      "system_power": {"name": "System power"},
+      "winter_humidifier": {"name": "Winter humidifier"}
+    }
+  }
+}
