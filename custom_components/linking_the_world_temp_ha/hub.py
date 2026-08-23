@@ -136,8 +136,10 @@ class LinkingTempHub:
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
         await self._async_restore_panels()
-        self._runner = self.hass.async_create_task(
-            self._async_run(), f"{DOMAIN}_{self.entry.entry_id}"
+        self._runner = self.entry.async_create_background_task(
+            self.hass,
+            self._async_run(),
+            f"{DOMAIN}_{self.entry.entry_id}",
         )
 
     async def async_stop(self) -> None:
