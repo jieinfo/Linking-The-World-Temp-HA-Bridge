@@ -1,0 +1,79 @@
+{
+  "title": "Linking The World Temp HA",
+  "config": {
+    "step": {
+      "user": {
+        "title": "连接六恒科技系统主机",
+        "description": "使用 MC7021 的本地主机账号连接 TCP/9000。建议手机 App 使用 Test，HA 使用 admin，避免相同账号会话互相影响。",
+        "data": {
+          "host": "主机地址",
+          "port": "主机端口",
+          "username": "本地主机账号",
+          "password": "本地主机密码",
+          "client_id": "协议客户端 ID",
+          "tech_system_mac": "科技系统总控 MAC"
+        }
+      },
+      "reconfigure": {
+        "title": "重新配置六恒科技系统主机",
+        "description": "修改地址或本地主机凭据。验证成功后集成会自动重新加载，现有实体不会被删除。",
+        "data": {
+          "host": "主机地址",
+          "port": "主机端口",
+          "username": "本地主机账号",
+          "password": "本地主机密码",
+          "client_id": "协议客户端 ID",
+          "tech_system_mac": "科技系统总控 MAC"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接或登录主机，请检查地址、端口、账号和密码",
+      "invalid_config": "配置格式无效，请检查客户端 ID 和总控 MAC",
+      "unknown": "发生未知错误，请查看 Home Assistant 日志"
+    },
+    "abort": {
+      "already_configured": "这台主机已经配置"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "运行与安全设置",
+        "data": {
+          "allow_control": "允许从 HA 控制设备",
+          "command_min_interval": "控制命令最小间隔（秒）",
+          "command_confirmation_timeout": "命令确认超时（秒）",
+          "controller_silence_timeout": "主机静默重连时间（秒）",
+          "thermostat_offline_after": "面板无上报离线时间（秒，0 表示关闭）"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "controller_connection": {"name": "主机连接"},
+      "protocol_verified": {"name": "协议兼容"}
+    },
+    "climate": {
+      "room_thermostat": {"name": "温控"}
+    },
+    "select": {
+      "system_mode": {"name": "运行模式"},
+      "system_scene": {"name": "场景"}
+    },
+    "sensor": {
+      "connection_error": {"name": "最近连接错误"},
+      "protocol_status": {"name": "协议验证状态"},
+      "control_permission": {"name": "控制权限"},
+      "last_command": {"name": "最近控制命令"},
+      "panel_count": {"name": "已发现面板数量"},
+      "automation_temperature": {"name": "自动化温度"},
+      "automation_humidity": {"name": "自动化湿度"}
+    },
+    "switch": {
+      "system_power": {"name": "总开关"},
+      "winter_humidifier": {"name": "冬季加湿"}
+    }
+  }
+}
