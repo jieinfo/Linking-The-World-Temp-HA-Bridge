@@ -383,6 +383,18 @@ class PendingCommand:
     value: int | None
 
 
+@dataclass(frozen=True)
+class QueuedCommand:
+    """The latest thermostat temperature requested while one is pending."""
+
+    label: str
+    target: str
+    expected: dict[str, str]
+    mac: bytes
+    command: int
+    value: int | None
+
+
 def parse_device_mac(value: str) -> bytes:
     """Parse the eight-byte virtual-device MAC used by the local protocol."""
     normalized = value.replace(":", "").replace("-", "").strip()
@@ -715,6 +727,7 @@ class Bridge:
         self.protocol_status = "等待兼容状态验证"
         self.session_started_at = time.monotonic()
         self.pending_commands: dict[str, PendingCommand] = {}
+        self.queued_commands: dict[str, QueuedCommand] = {}
         self.last_command_status = "idle"
         self.last_connection_error = "正在连接主机"
         self.mqtt_connected = False
@@ -753,6 +766,7 @@ class Bridge:
                 self._touch_liveness("running")
                 self._assert_controller_healthy()
                 self._expire_pending_commands()
+                self._dispatch_queued_commands()
                 if time.monotonic() >= heartbeat_at:
                     self.client.heartbeat()
                     heartbeat_at = time.monotonic() + 15
@@ -934,6 +948,7 @@ class Bridge:
         mac: bytes,
         command: int,
         value: int | None = None,
+        coalesce_pending: bool = False,
     ) -> None:
         """Send a command without missing an immediate controller status reply."""
         if not self.allow_control:
@@ -941,6 +956,8 @@ class Bridge:
         if self.require_protocol_verification and not self._protocol_is_verified():
             raise RuntimeError("controller protocol has not been verified by a compatible status report")
         with self._command_lock:
+            if coalesce_pending and self._queue_replacement_command(target, label, expected, mac, command, value):
+                return
             elapsed = None if self._last_command_at is None else time.monotonic() - self._last_command_at
             if elapsed is not None and elapsed < self.command_min_interval:
                 raise RuntimeError("commands are rate-limited; wait briefly before retrying")
@@ -983,6 +1000,7 @@ class Bridge:
                 thermostat.mac,
                 COMMAND_MODE,
                 raw_value,
+                coalesce_pending=True,
             )
         elif setting in ("power", "mode"):
             if setting == "mode" and value not in ("off", self._thermostat_active_hvac_mode()):
@@ -1105,6 +1123,53 @@ class Bridge:
         self._publish_bridge_diagnostics()
         LOG.info("command sent; waiting for MC7021 confirmation: %s", label)
 
+    def _queue_replacement_command(
+        self,
+        target: str,
+        label: str,
+        expected: dict[str, str],
+        mac: bytes,
+        command: int,
+        value: int | None,
+    ) -> bool:
+        """Keep only the latest temperature while the panel confirms the prior one."""
+        with self._pending_command_lock:
+            if target not in self.pending_commands:
+                return False
+            self.queued_commands[target] = QueuedCommand(label, target, expected, mac, command, value)
+            self.last_command_status = f"已合并等待指令: {label}"
+        self._publish_bridge_diagnostics()
+        LOG.info("queued latest command until MC7021 confirms the previous one: %s", label)
+        return True
+
+    def _dispatch_queued_commands(self) -> None:
+        """Send coalesced thermostat commands after their predecessor clears."""
+        with self._pending_command_lock:
+            ready_targets = [target for target in self.queued_commands if target not in self.pending_commands]
+            if not ready_targets:
+                return
+            target = ready_targets[0]
+            queued = self.queued_commands.pop(target)
+        try:
+            self._send_and_track_command(
+                queued.target,
+                queued.label,
+                queued.expected,
+                queued.mac,
+                queued.command,
+                queued.value,
+            )
+        except RuntimeError as error:
+            with self._pending_command_lock:
+                self.queued_commands.setdefault(target, queued)
+            if "rate-limited" in str(error) or "awaiting confirmation" in str(error):
+                return
+            LOG.error("queued command %s failed: %s", queued.label, error)
+        except OSError:
+            with self._pending_command_lock:
+                self.queued_commands.setdefault(target, queued)
+            raise
+
     def _confirm_pending_command(self, target: str, actual: dict[str, str | None]) -> None:
         confirmed_label: str | None = None
         with self._pending_command_lock:
@@ -1126,12 +1191,22 @@ class Bridge:
                 if now >= pending.deadline
             ]
             if expired:
-                self.last_command_status = f"确认超时: {expired[-1].label}"
+                newest = expired[-1]
+                has_replacement = newest.target in self.queued_commands
+                self.last_command_status = (
+                    f"确认超时，继续发送最新指令: {newest.label}"
+                    if has_replacement
+                    else f"确认超时: {newest.label}"
+                )
         for pending in expired:
             self._publish_bridge_diagnostics()
-            LOG.error(
-                "MC7021 command confirmation timed out after %.0fs: label=%s target=%s mac=%s command=%d value=%s expected=%s",
+            with self._pending_command_lock:
+                has_replacement = pending.target in self.queued_commands
+            log = LOG.warning if has_replacement else LOG.error
+            log(
+                "MC7021 command confirmation timed out after %.0fs%s: label=%s target=%s mac=%s command=%d value=%s expected=%s",
                 self.command_confirmation_timeout,
+                "; dispatching a newer queued command" if has_replacement else "",
                 pending.label,
                 pending.target,
                 pending.mac.hex(),

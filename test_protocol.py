@@ -411,6 +411,17 @@ class ProtocolTests(unittest.TestCase):
         bridge.client.send_command_to.assert_called_once_with(thermostat.mac, COMMAND_MODE, 42)
         self.assertEqual(thermostat.target_temperature, 20)
         self.assertIn(f"thermostat_{thermostat.mac.hex()}", bridge.pending_commands)
+        bridge._thermostat_command(thermostat.mac.hex(), "temperature", "22")
+        bridge._thermostat_command(thermostat.mac.hex(), "temperature", "23")
+        queued = bridge.queued_commands[f"thermostat_{thermostat.mac.hex()}"]
+        self.assertEqual(queued.expected, {"target_temperature": "23"})
+        self.assertEqual(bridge.client.send_command_to.call_count, 1)
+        bridge._confirm_pending_command(
+            f"thermostat_{thermostat.mac.hex()}", {"target_temperature": "21", "power": "OFF"}
+        )
+        bridge._dispatch_queued_commands()
+        bridge.client.send_command_to.assert_called_with(thermostat.mac, COMMAND_MODE, 46)
+        self.assertEqual(bridge.pending_commands[f"thermostat_{thermostat.mac.hex()}"].expected, {"target_temperature": "23"})
         with self.assertRaises(RuntimeError):
             bridge._thermostat_command(thermostat.mac.hex(), "temperature", "21.5")
         with self.assertRaises(RuntimeError):
@@ -441,6 +452,32 @@ class ProtocolTests(unittest.TestCase):
         bridge._confirm_pending_command("system", {"power": "ON"})
         self.assertNotIn("system", bridge.pending_commands)
         self.assertIn("已确认", bridge.last_command_status)
+
+    def test_queued_thermostat_temperature_sends_after_a_confirmation_timeout(self):
+        config = {
+            "moorgen": {"host": "192.0.2.1", "username": "Test", "password": ""},
+            "mqtt": {"host": "broker", "client_id": "test"},
+            "safety": {"command_min_interval": 0, "require_protocol_verification": False},
+        }
+        bridge = Bridge(config)
+        thermostat = ThermostatState(bytes.fromhex("ff00ffffffff01ff"), "r1100", 20, 25, "ON", 50)
+        bridge.thermostats[thermostat.mac.hex()] = thermostat
+        bridge.mqtt.publish = MagicMock()
+        bridge.client.send_command_to = MagicMock()
+        bridge.client.request_tech_system_status = MagicMock()
+
+        bridge._thermostat_command(thermostat.mac.hex(), "temperature", "21")
+        bridge._thermostat_command(thermostat.mac.hex(), "temperature", "22")
+        pending = bridge.pending_commands[f"thermostat_{thermostat.mac.hex()}"]
+        pending.deadline = 0
+        bridge._expire_pending_commands()
+        bridge._dispatch_queued_commands()
+
+        bridge.client.send_command_to.assert_has_calls([
+            unittest.mock.call(thermostat.mac, COMMAND_MODE, 42),
+            unittest.mock.call(thermostat.mac, COMMAND_MODE, 44),
+        ])
+        self.assertEqual(bridge.pending_commands[f"thermostat_{thermostat.mac.hex()}"].expected, {"target_temperature": "22"})
 
     def test_tracked_command_registers_before_an_immediate_status_reply(self):
         config = {
