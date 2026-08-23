@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 SUPERSEDED_DEBOUNCE = 0.75
 SUPERSEDED_MAX_WAIT = 3.0
 STATUS_POLL_INTERVAL = 2.0
+MAX_TEMPERATURE_COMMAND_ATTEMPTS = 2
 
 
 @dataclass
@@ -22,6 +23,7 @@ class PendingCommand:
     mac: bytes
     command: int
     value: int | None
+    attempts: int = 1
 
 
 @dataclass(frozen=True)
@@ -67,3 +69,13 @@ def replacement_is_ready(
 ) -> bool:
     """Return whether the latest value should replace the pending intermediate value."""
     return now >= min(pending.deadline, queued.promote_at)
+
+
+def temperature_retry_is_allowed(pending: PendingCommand) -> bool:
+    """Return whether an idempotent thermostat setpoint may be sent once more."""
+    return (
+        pending.target.startswith("thermostat_")
+        and "target_temperature" in pending.expected
+        and pending.value is not None
+        and pending.attempts < MAX_TEMPERATURE_COMMAND_ATTEMPTS
+    )

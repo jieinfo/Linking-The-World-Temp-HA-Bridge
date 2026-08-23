@@ -88,6 +88,17 @@ class CommandQueueTests(unittest.TestCase):
             queue.replacement_is_ready(short_pending, queued, short_pending.deadline)
         )
 
+    def test_temperature_setpoint_can_only_be_retried_once(self) -> None:
+        command = pending("22")
+        self.assertTrue(queue.temperature_retry_is_allowed(command))
+        command.attempts = 2
+        self.assertFalse(queue.temperature_retry_is_allowed(command))
+
+    def test_non_temperature_command_is_not_retryable(self) -> None:
+        command = pending("22")
+        command.target = "system"
+        self.assertFalse(queue.temperature_retry_is_allowed(command))
+
 
 if __name__ == "__main__":
     unittest.main()
