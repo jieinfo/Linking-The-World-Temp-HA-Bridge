@@ -22,6 +22,7 @@ from .command_queue import (
     QueuedCommand,
     coalesce_latest,
     replacement_is_ready,
+    temperature_retry_is_allowed,
 )
 from .const import (
     CONF_ALLOW_CONTROL,
@@ -323,7 +324,7 @@ class LinkingTempHub:
                 )
             self._promote_superseded(now)
             await self._async_poll_pending_status(now)
-            self._expire_pending(now)
+            await self._async_expire_pending(now)
             await self._async_dispatch_queued()
             if now >= heartbeat_at:
                 await client.heartbeat()
@@ -506,36 +507,85 @@ class LinkingTempHub:
         self._pending.pop(target, None)
         self.last_command_status = f"confirmed:{pending.label}"
 
-    def _expire_pending(self, now: float) -> None:
+    async def _async_expire_pending(self, now: float) -> None:
+        """Advance queued commands, retry setpoints once, or report final failure."""
         expired = [
             target
             for target, pending in self._pending.items()
             if now >= pending.deadline
         ]
         for target in expired:
-            pending = self._pending.pop(target)
-            if target in self._queued:
-                self.last_command_status = f"timeout_continuing:{pending.label}"
-                _LOGGER.warning(
-                    "Command confirmation timed out; continuing latest queued value: "
-                    "label=%s target=%s expected=%s waited=%.1fs",
-                    pending.label,
-                    target,
-                    pending.expected,
-                    now - pending.sent_at,
-                )
-            else:
-                self.last_command_status = f"timeout:{pending.label}"
-                _LOGGER.error(
-                    "MC7021 command confirmation timed out: label=%s target=%s "
-                    "expected=%s waited=%.1fs",
-                    pending.label,
-                    target,
-                    pending.expected,
-                    now - pending.sent_at,
-                )
+            async with self._command_lock:
+                pending = self._pending.get(target)
+                if pending is None or now < pending.deadline:
+                    continue
+                if target in self._queued:
+                    self._pending.pop(target, None)
+                    self.last_command_status = f"timeout_continuing:{pending.label}"
+                    _LOGGER.warning(
+                        "Command confirmation timed out; continuing latest queued "
+                        "value: label=%s target=%s expected=%s waited=%.1fs",
+                        pending.label,
+                        target,
+                        pending.expected,
+                        now - pending.sent_at,
+                    )
+                elif temperature_retry_is_allowed(pending):
+                    await self._async_retry_temperature_command(pending)
+                else:
+                    self._pending.pop(target, None)
+                    self.last_command_status = f"timeout:{pending.label}"
+                    _LOGGER.error(
+                        "MC7021 command confirmation timed out: label=%s target=%s "
+                        "expected=%s attempts=%d waited=%.1fs",
+                        pending.label,
+                        target,
+                        pending.expected,
+                        pending.attempts,
+                        now - pending.sent_at,
+                    )
         if expired:
             self._notify()
+
+    async def _async_retry_temperature_command(
+        self, pending: PendingCommand
+    ) -> None:
+        """Retry one unconfirmed thermostat setpoint without reporting failure yet."""
+        client = self._client
+        if client is None or not self.available:
+            raise ConnectionError("MC7021 session unavailable during command retry")
+        now = time.monotonic()
+        if self._last_command_at is not None:
+            remaining = self.command_min_interval - (now - self._last_command_at)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        if self._pending.get(pending.target) is not pending:
+            return
+        retry_at = time.monotonic()
+        pending.attempts += 1
+        pending.deadline = retry_at + self.command_confirmation_timeout
+        pending.next_status_poll_at = retry_at + min(
+            STATUS_POLL_INTERVAL,
+            max(0.5, self.command_confirmation_timeout / 2),
+        )
+        self.last_command_status = f"retrying:{pending.label}"
+        _LOGGER.warning(
+            "Thermostat command confirmation delayed; retrying once: "
+            "label=%s target=%s expected=%s attempt=%d",
+            pending.label,
+            pending.target,
+            pending.expected,
+            pending.attempts,
+        )
+        try:
+            await client.send_command(pending.mac, pending.command, pending.value)
+            self._last_command_at = time.monotonic()
+            await client.request_status()
+        except Exception:
+            if self._pending.get(pending.target) is pending:
+                self._pending.pop(pending.target, None)
+                self.last_command_status = f"failed:{pending.label}"
+            raise
 
     async def _async_frame_received(self, frame: YasHcpFrame) -> None:
         if frame.kind != 3 or frame.opcode != 8:
