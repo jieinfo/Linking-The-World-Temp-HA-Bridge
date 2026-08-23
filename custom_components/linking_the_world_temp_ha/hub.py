@@ -62,6 +62,7 @@ from .protocol import (
     parse_device_mac,
     preserve_valid_thermostat_measurements,
 )
+from .thermostat_policy import room_thermostat_block_reason
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -243,7 +244,19 @@ class LinkingTempHub:
             {"power": "ON" if enabled else "OFF"},
             thermostat.mac,
             COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
+            send_guard=(
+                self._room_thermostat_block_reason
+                if enabled
+                else None
+            ),
         )
+
+    def _room_thermostat_block_reason(self) -> str | None:
+        """Return why a room panel cannot be enabled at send time."""
+        pending_system = self._pending.get("system")
+        if pending_system is not None and pending_system.expected.get("power") == "OFF":
+            return "科技系统总开关正在关闭，房间温控面板不能开启"
+        return room_thermostat_block_reason(self.state.power, self.state.mode)
 
     async def async_set_thermostat_temperature(
         self, mac_hex: str, temperature: float
@@ -363,11 +376,17 @@ class LinkingTempHub:
         value: int | None = None,
         *,
         coalesce: bool = False,
+        send_guard: Callable[[], str | None] | None = None,
     ) -> None:
         if not self.allow_control:
             raise HomeAssistantError("集成当前处于只读模式")
         if not self.available or self._client is None:
             raise HomeAssistantError("主机尚未连接或协议状态尚未验证")
+
+        def validate_send_guard() -> None:
+            if send_guard is not None and (reason := send_guard()):
+                raise HomeAssistantError(reason)
+
         async with self._command_lock:
             if target in self._pending:
                 if not coalesce:
@@ -394,6 +413,7 @@ class LinkingTempHub:
                 remaining = self.command_min_interval - (now - self._last_command_at)
                 if remaining > 0:
                     await asyncio.sleep(remaining)
+            validate_send_guard()
             now = time.monotonic()
             pending = PendingCommand(
                 label,
@@ -414,7 +434,15 @@ class LinkingTempHub:
             self.last_command_status = f"waiting:{label}"
             self._notify()
             try:
-                await self._client.send_command(mac, command, value)
+                if send_guard is None:
+                    await self._client.send_command(mac, command, value)
+                else:
+                    await self._client.send_command(
+                        mac,
+                        command,
+                        value,
+                        before_write=validate_send_guard,
+                    )
                 self._last_command_at = time.monotonic()
                 await self._client.request_status()
             except Exception:

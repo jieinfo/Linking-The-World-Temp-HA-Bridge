@@ -16,12 +16,11 @@ from .const import (
 )
 from .entity import LinkingThermostatEntity
 from .hub import LinkingTempHub
+from .thermostat_policy import can_operate_room_thermostat
 
 MODE_TO_HVAC = {
     "cool": HVACMode.COOL,
     "heat": HVACMode.HEAT,
-    "ventilation": HVACMode.FAN_ONLY,
-    "dehumidify": HVACMode.DRY,
 }
 
 
@@ -57,15 +56,21 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
 
     @property
     def hvac_modes(self) -> list[HVACMode]:
+        if not can_operate_room_thermostat(
+            self.hub.state.power, self.hub.state.mode
+        ):
+            return [HVACMode.OFF]
         active_mode = MODE_TO_HVAC.get(self.hub.state.mode)
         return [HVACMode.OFF] + ([active_mode] if active_mode is not None else [])
 
     @property
     def hvac_mode(self) -> HVACMode:
         thermostat = self.hub.thermostats[self.mac_hex]
-        if thermostat.power != "ON":
+        if thermostat.power != "ON" or not can_operate_room_thermostat(
+            self.hub.state.power, self.hub.state.mode
+        ):
             return HVACMode.OFF
-        return MODE_TO_HVAC.get(self.hub.state.mode, HVACMode.HEAT)
+        return MODE_TO_HVAC[self.hub.state.mode]
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         await self.hub.async_set_thermostat_power(

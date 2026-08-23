@@ -337,14 +337,19 @@ class AsyncMoorgenClient:
         self._writer = None
 
     async def send_command(
-        self, mac: bytes, command: int, value: int | None = None
+        self,
+        mac: bytes,
+        command: int,
+        value: int | None = None,
+        *,
+        before_write: Callable[[], None] | None = None,
     ) -> None:
         if not self._ready:
             raise ConnectionError("MC7021 session is not ready")
         body = tlv(0x0010, b"\x01") + tlv(0x0004, mac) + tlv(0x0009, bytes((command,)))
         if value is not None:
             body += tlv(0x000A, bytes((value,)))
-        await self._send(4, 9, body)
+        await self._send(4, 9, body, before_write=before_write)
 
     async def heartbeat(self) -> None:
         if self._ready:
@@ -376,10 +381,19 @@ class AsyncMoorgenClient:
         )
         await self.request_status()
 
-    async def _send(self, kind: int, opcode: int, body: bytes) -> None:
+    async def _send(
+        self,
+        kind: int,
+        opcode: int,
+        body: bytes,
+        *,
+        before_write: Callable[[], None] | None = None,
+    ) -> None:
         if self._writer is None:
             raise ConnectionError("MC7021 socket is not connected")
         async with self._write_lock:
+            if before_write is not None:
+                before_write()
             frame = YasHcpFrame(kind, opcode, self._sequence, body)
             self._sequence = (self._sequence + 1) & 0xFFFF
             self._writer.write(frame.encode())
