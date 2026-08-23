@@ -151,6 +151,27 @@ class ThermostatState:
     available: bool = False
 
 
+def preserve_valid_thermostat_measurements(
+    current: ThermostatState, previous: ThermostatState | None
+) -> bool:
+    """Keep the last credible measurements when MC7021 reports placeholders."""
+    temperature = current.current_temperature
+    humidity = current.humidity
+    valid = (
+        temperature is not None
+        and humidity is not None
+        and 0 <= temperature <= 60
+        and 0 <= humidity <= 100
+    )
+    if valid:
+        return True
+    current.current_temperature = (
+        previous.current_temperature if previous is not None else None
+    )
+    current.humidity = previous.humidity if previous is not None else None
+    return False
+
+
 def parse_device_mac(value: str) -> bytes:
     normalized = value.replace(":", "").replace("-", "").strip()
     try:
