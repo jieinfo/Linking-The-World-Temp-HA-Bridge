@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from custom_components.linking_the_world_temp_ha.protocol import (
@@ -29,6 +31,21 @@ def _client(server: FakeMC7021Server) -> AsyncMoorgenClient:
         "admin",
         "password",
     )
+
+
+def _captured_login_rejection(body: bytes = tlv(0x031C, b"\x01")) -> bytes:
+    """Return the captured rejection shape without sequence rewriting by the fake."""
+    return YasHcpFrame(2, 5, 0, body).encode()
+
+
+async def _wait_for_received_frame(
+    server: FakeMC7021Server, kind: int, opcode: int
+) -> None:
+    while not any(
+        (frame.kind, frame.opcode) == (kind, opcode)
+        for frame in server.received_frames
+    ):
+        await asyncio.sleep(0)
 
 
 @pytest.fixture
@@ -109,7 +126,7 @@ async def test_protocol_classifies_the_captured_login_rejection() -> None:
     """Only the observed rejection frame represents invalid credentials."""
     server = FakeMC7021Server(
         FakeControllerBehavior(
-            login_reply=YasHcpFrame(2, 5, 0, tlv(0x031C, b"\x01")).encode(),
+            login_reply=_captured_login_rejection(),
             close_after_stage="login",
         )
     )
@@ -119,6 +136,139 @@ async def test_protocol_classifies_the_captured_login_rejection() -> None:
     try:
         with pytest.raises(AuthenticationRejected):
             await client.connect()
+    finally:
+        await client.close()
+        await server.async_stop()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [tlv(0x031C, b"\x00"), tlv(0x031C, b"\x01\x00")],
+    ids=["wrong_value", "wrong_length"],
+)
+async def test_protocol_does_not_treat_invalid_rejection_tlvs_as_bad_credentials(
+    body: bytes,
+) -> None:
+    """Only a one-byte rejection TLV with value one represents bad credentials."""
+    server = FakeMC7021Server(
+        FakeControllerBehavior(login_reply=_captured_login_rejection(body))
+    )
+    await server.async_start()
+    client = _client(server)
+
+    try:
+        with pytest.raises(IncompatibleProtocol) as raised:
+            await client.connect()
+        assert not isinstance(raised.value, AuthenticationRejected)
+    finally:
+        await client.close()
+        await server.async_stop()
+
+
+async def test_protocol_discards_pre_login_rejection_frames() -> None:
+    """A rejection queued beside hello must not be attributed to the new login."""
+    server = FakeMC7021Server(
+        FakeControllerBehavior(
+            hello_reply=(
+                YasHcpFrame(1, 3, 0, b"").encode()
+                + _captured_login_rejection()
+            )
+        )
+    )
+    await server.async_start()
+    client = _client(server)
+
+    try:
+        await client.connect()
+        assert client.is_ready
+    finally:
+        await client.close()
+        await server.async_stop()
+
+
+async def test_protocol_discards_pre_login_rejection_before_frame_callbacks() -> None:
+    """A yielding hello callback cannot move a stale rejection across login."""
+    hello_callback_started = asyncio.Event()
+    release_hello_callback = asyncio.Event()
+    server = FakeMC7021Server(
+        FakeControllerBehavior(
+            hello_reply=(
+                YasHcpFrame(1, 3, 0, b"").encode()
+                + _captured_login_rejection()
+            )
+        )
+    )
+    await server.async_start()
+    client = _client(server)
+
+    async def pause_after_hello(frame: YasHcpFrame) -> None:
+        if (frame.kind, frame.opcode) == (1, 3):
+            hello_callback_started.set()
+            await release_hello_callback.wait()
+
+    client.on_frame = pause_after_hello
+    connect_task = asyncio.create_task(client.connect())
+
+    try:
+        await asyncio.wait_for(hello_callback_started.wait(), 1)
+        await asyncio.wait_for(_wait_for_received_frame(server, 2, 4), 1)
+        release_hello_callback.set()
+        await connect_task
+        assert client.is_ready
+    finally:
+        release_hello_callback.set()
+        await client.close()
+        await server.async_stop()
+
+
+async def test_protocol_rebuilds_the_inbox_before_reconnecting() -> None:
+    """Frames from a closed session cannot classify credentials on the next one."""
+    server = FakeMC7021Server()
+    await server.async_start()
+    client = _client(server)
+    client._inbox.put_nowait(YasHcpFrame(2, 5, 0, tlv(0x031C, b"\x01")))
+    await client.close()
+
+    try:
+        await client.connect()
+        assert client.is_ready
+    finally:
+        await client.close()
+        await server.async_stop()
+
+
+async def test_protocol_cancelling_a_waiter_does_not_consume_a_later_frame() -> None:
+    """Cancelling a wait must not leave a queue-get task behind to steal a frame."""
+    client = AsyncMoorgenClient("127.0.0.1", 1, "admin", "password")
+    waiter = asyncio.create_task(client._wait_for_opcodes(1, {3}, 1))
+    await asyncio.sleep(0)
+    waiter.cancel()
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        frame = YasHcpFrame(1, 3, 0, b"")
+        client._inbox.put_nowait(frame)
+        assert await client._wait_for_opcodes(1, {3}, 0.01) == frame
+    finally:
+        await client.close()
+
+
+async def test_protocol_cancelling_connect_closes_the_session() -> None:
+    """Cancelling connect must close its reader, writer, and reader task."""
+    server = FakeMC7021Server(FakeControllerBehavior(hello_reply=None))
+    await server.async_start()
+    client = _client(server)
+    connect_task = asyncio.create_task(client.connect())
+
+    try:
+        await asyncio.wait_for(server.received_frame_event.wait(), 1)
+        connect_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await connect_task
+        assert client._reader is None
+        assert client._writer is None
+        assert not client.reader_alive
     finally:
         await client.close()
         await server.async_stop()

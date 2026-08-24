@@ -308,9 +308,8 @@ class AsyncMoorgenClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._reader_task: asyncio.Task[None] | None = None
-        self._reader_stopped = asyncio.Event()
         self._decoder = YasHcpDecoder()
-        self._inbox: asyncio.Queue[YasHcpFrame] = asyncio.Queue()
+        self._inbox: asyncio.Queue[YasHcpFrame | None] = asyncio.Queue()
         self._write_lock = asyncio.Lock()
         self._sequence = 0
         self._ready = False
@@ -335,6 +334,9 @@ class AsyncMoorgenClient:
         except MoorgenConnectionError:
             await self.close()
             raise
+        except asyncio.CancelledError:
+            await self.close()
+            raise
         except (OSError, ConnectionError) as error:
             await self.close()
             raise IncompatibleProtocol(
@@ -348,9 +350,10 @@ class AsyncMoorgenClient:
             )
             self.last_received_at = time.monotonic()
             self.reader_error = None
-            self._reader_stopped.clear()
+            self._decoder = YasHcpDecoder()
+            self._inbox = asyncio.Queue()
             self._reader_task = asyncio.create_task(
-                self._read_loop(), name="linking-temp-mc7021-reader"
+                self._read_loop(self._inbox), name="linking-temp-mc7021-reader"
             )
         except (OSError, TimeoutError, asyncio.TimeoutError) as error:
             raise TcpConnectError(
@@ -370,6 +373,7 @@ class AsyncMoorgenClient:
 
     async def _async_complete_login(self) -> None:
         try:
+            self._discard_pre_login_frames()
             await self._send_login()
             reply = await self._wait_for_opcodes(2, {5, 6}, LOGIN_TIMEOUT)
         except IncompatibleProtocol:
@@ -385,6 +389,19 @@ class AsyncMoorgenClient:
         ):
             raise AuthenticationRejected("MC7021 rejected the supplied credentials")
         raise IncompatibleProtocol("MC7021 sent an unknown login rejection response")
+
+    def _discard_pre_login_frames(self) -> None:
+        """Discard stale login replies before sending credentials for this session."""
+        deferred: list[YasHcpFrame | None] = []
+        while True:
+            try:
+                frame = self._inbox.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if frame is None or frame.kind != 2:
+                deferred.append(frame)
+        for frame in deferred:
+            self._inbox.put_nowait(frame)
 
     async def close(self) -> None:
         self._ready = False
@@ -481,54 +498,40 @@ class AsyncMoorgenClient:
     async def _wait_for_opcodes(
         self, kind: int, opcodes: set[int], timeout: float
     ) -> YasHcpFrame:
-        deferred: list[YasHcpFrame] = []
         deadline = asyncio.get_running_loop().time() + timeout
-        try:
-            while True:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"MC7021 did not return kind={kind:#x}, opcode={opcodes}"
-                    )
-                inbox_get = asyncio.create_task(self._inbox.get())
-                reader_stopped = asyncio.create_task(self._reader_stopped.wait())
-                done, pending = await asyncio.wait(
-                    {inbox_get, reader_stopped},
-                    timeout=remaining,
-                    return_when=asyncio.FIRST_COMPLETED,
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"MC7021 did not return kind={kind:#x}, opcode={opcodes}"
                 )
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-                if inbox_get in done:
-                    frame = inbox_get.result()
-                elif reader_stopped in done:
-                    if self.reader_error is not None:
-                        raise self.reader_error
-                    raise ConnectionError("MC7021 closed the TCP stream")
-                else:
-                    raise TimeoutError(
-                        f"MC7021 did not return kind={kind:#x}, opcode={opcodes}"
-                    )
-                if frame.kind == kind:
-                    if frame.opcode in opcodes:
-                        return frame
-                    raise IncompatibleProtocol(
-                        "MC7021 returned an unexpected response "
-                        f"kind={frame.kind:#x}, opcode={frame.opcode:#x}"
-                    )
-                deferred.append(frame)
-        finally:
-            for frame in deferred:
-                self._inbox.put_nowait(frame)
+            try:
+                frame = await asyncio.wait_for(self._inbox.get(), remaining)
+            except asyncio.TimeoutError as error:
+                raise TimeoutError(
+                    f"MC7021 did not return kind={kind:#x}, opcode={opcodes}"
+                ) from error
+            if frame is None:
+                if self.reader_error is not None:
+                    raise self.reader_error
+                raise ConnectionError("MC7021 closed the TCP stream")
+            if frame.kind == kind:
+                if frame.opcode in opcodes:
+                    return frame
+                raise IncompatibleProtocol(
+                    "MC7021 returned an unexpected response "
+                    f"kind={frame.kind:#x}, opcode={frame.opcode:#x}"
+                )
 
-    async def _read_loop(self) -> None:
+    async def _read_loop(self, inbox: asyncio.Queue[YasHcpFrame | None]) -> None:
         assert self._reader is not None
         try:
             while data := await self._reader.read(4096):
                 self.last_received_at = time.monotonic()
-                for frame in self._decoder.feed(data):
+                frames = self._decoder.feed(data)
+                for frame in frames:
+                    inbox.put_nowait(frame)
+                for frame in frames:
                     _LOGGER.debug(
                         "Received MC7021 kind=%02x opcode=%02x body=%s",
                         frame.kind,
@@ -547,8 +550,6 @@ class AsyncMoorgenClient:
                         result = self.on_status(frame.body)
                         if result is not None:
                             await result
-                    else:
-                        self._inbox.put_nowait(frame)
             raise ConnectionError("MC7021 closed the TCP stream")
         except asyncio.CancelledError:
             raise
@@ -556,4 +557,4 @@ class AsyncMoorgenClient:
             self.reader_error = error
         finally:
             self._ready = False
-            self._reader_stopped.set()
+            inbox.put_nowait(None)
