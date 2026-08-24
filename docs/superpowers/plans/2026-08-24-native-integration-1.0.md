@@ -137,11 +137,16 @@ class IncompatibleProtocol(MoorgenConnectionError): ...
 ```
 
 - Produces `AsyncMoorgenClient.connect() -> None` with stage-specific exceptions.
-- Explicit rejection is raised only by a documented `is_explicit_auth_rejection(frame)` predicate. The default predicate returns false for every currently captured response because no captured rejection marker exists.
+- Explicit rejection is the captured login response `(kind=0x02,
+  opcode=0x05)` containing TLV `0x031c=0x01`; successful login remains
+  `(0x02, 0x06)`. No other response, EOF, or timeout is invalid credentials.
 
 - [ ] **Step 1: Write failing exception-classification tests**
 
-Test TCP refusal, missing hello reply, missing login reply, malformed hello reply, and an injected explicit rejection detector. Assert that unknown login bodies and closed sockets do not become `AuthenticationRejected`.
+Test TCP refusal, missing hello reply, missing login reply, malformed hello
+reply, captured `(0x02, 0x05, TLV 0x031c=0x01)` rejection, and captured
+`(0x02, 0x06)` success. Assert that unknown login bodies and closed sockets do
+not become `AuthenticationRejected`.
 
 - [ ] **Step 2: Run focused tests and observe generic `CannotConnect` failures**
 
@@ -155,7 +160,10 @@ Split socket open, hello wait, and login wait into private methods that wrap onl
 
 - [ ] **Step 4: Preserve the conservative authentication rule**
 
-Add a rejection-detector injection point for tests, but do not assign semantics to undocumented production fields. A captured successful login reply must pass. Unknown replies, EOF, and timeout must map to `LoginTimeout` or `IncompatibleProtocol`, never invalid authentication.
+Wait for either login opcode `0x05` or `0x06`. Raise
+`AuthenticationRejected` immediately for the evidenced `0x05` rejection TLV;
+accept `0x06` as success. Unknown replies, EOF, and timeout map to
+`LoginTimeout` or `IncompatibleProtocol`, never invalid authentication.
 
 - [ ] **Step 5: Verify framing regressions**
 
@@ -274,7 +282,12 @@ git commit -m "refactor: add typed runtime and connection health"
 
 - [ ] **Step 1: Write failing real config-flow tests**
 
-Use `hass.config_entries.flow.async_init` to test successful user setup, each typed error key, reconfigure without duplicate entries, explicit-auth reauth, wrong reauth credentials, and successful credential replacement. Assert reauth updates the same entry.
+Use `hass.config_entries.flow.async_init` to test successful user setup, each
+typed error key, reconfigure without duplicate entries, the captured
+wrong-password rejection, explicit-auth reauth, wrong reauth credentials, and
+successful credential replacement. Assert reauth updates the same entry and
+the initial wrong-password form returns `invalid_auth` without an eight-second
+timeout.
 
 - [ ] **Step 2: Write failing issue lifecycle tests**
 
@@ -286,7 +299,12 @@ Map typed failures to `cannot_connect`, `handshake_failed`, `login_timeout`, `in
 
 - [ ] **Step 4: Implement reauth**
 
-Show only username and password, merge them with the existing host/port/client/MAC data, validate, call `_abort_if_unique_id_mismatch()`, then `async_update_reload_and_abort(..., data_updates=credentials)`. At runtime call `entry.async_start_reauth(hass)` only for `AuthenticationRejected`.
+Show only username and password, merge them with the existing
+host/port/client/MAC data, validate, call `_abort_if_unique_id_mismatch()`, then
+`async_update_reload_and_abort(..., data_updates=credentials)`. At runtime call
+`entry.async_start_reauth(hass)` only for `AuthenticationRejected`, stop that
+session, and pause reconnect attempts until the entry reload supplies new
+credentials.
 
 - [ ] **Step 5: Implement connection issue management**
 
@@ -294,7 +312,10 @@ Create warning Repairs with translation placeholders and config-entry linkage. L
 
 - [ ] **Step 6: Add complete English and Simplified Chinese text**
 
-Include config errors, reauth form and success message, issue titles/descriptions, and Repair instructions. Custom integration translation files must contain flat final text rather than Home Assistant Core placeholder references.
+Include the explicit message "主机拒绝登录，请检查本地主机账号和密码",
+config errors, reauth form and success message, issue titles/descriptions, and
+Repair instructions. Custom integration translation files must contain flat
+final text rather than Home Assistant Core placeholder references.
 
 - [ ] **Step 7: Run config and Repair tests**
 

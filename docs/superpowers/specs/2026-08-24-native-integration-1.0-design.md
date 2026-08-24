@@ -84,10 +84,20 @@ flow asks for username and password, validates them against the configured
 controller, updates the existing entry, and reloads it. It must not create a
 second config entry.
 
-Only a rejection marker whose meaning is established by protocol evidence may
-be classified as explicit authentication rejection. An unknown response,
-missing response, closed socket, or inferred field value must not be guessed to
+The captured wrong-password exchange establishes one explicit rejection: after
+the login request `(kind=0x02, opcode=0x04)`, the controller returns
+`(kind=0x02, opcode=0x05)` with TLV `0x031c=0x01` and then closes the socket.
+The captured successful exchange returns `(kind=0x02, opcode=0x06)`. The
+protocol client must wait for either response and classify only the evidenced
+`0x02/0x05` response as `AuthenticationRejected`. An unknown response, missing
+response, or socket close without the rejection frame must not be guessed to
 mean invalid credentials.
+
+During initial configuration, this rejection produces a localized invalid
+credentials error immediately rather than waiting for the login timeout. If it
+occurs after an entry has been loaded, the hub starts the entry-linked reauth
+flow and pauses automatic login retries until the entry is reloaded with new
+credentials. This avoids repeatedly attempting a known-invalid password.
 
 A login-stage timeout is ambiguous because the available captures do not prove
 that an incorrect password always produces a distinct negative reply. It must
