@@ -126,6 +126,33 @@
 - Accepted P1: an already-open stale-panel confirmation flow can delete a panel that reported again and whose issue was cleared; confirmation must atomically revalidate staleness against concurrent reports.
 - Accepted P1: diagnostics exports raw `last_connection_error` and `last_command_status`, allowing controller host, room identity, or full panel MAC to escape entry-data redaction.
 - Fix round 1 dispatched with stale-flow/report race and diagnostic canary tests.
+- Fix commit: `6841101 fix: harden stale panel repair lifecycle`.
+- Verification: 49 focused connection/health/Repair tests and 111 complete native tests passed.
+- Scoped re-review: PASS; stale-confirm/report atomicity and whole-tree diagnostics privacy are closed.
+- Task 6: complete.
+
+## Task 7 review
+
+- Implementer: `01a0333e-1025-7240-bce6-39f36f92fc9c`.
+- Commit: `55f3c82 feat: add private runtime diagnostics`.
+- Accepted P1: production warning/error command-timeout logs include `pending.label` and raw target, exposing room names and full panel MACs.
+- Accepted P2: diagnostics metric-content tests seed counters directly instead of exercising real reconnect/parser/measurement/command event paths, so missing or duplicate instrumentation can pass.
+- Fix round 1 dispatched with default-log canaries and event-driven metric assertions.
+- Fix round 1 completed locally:
+  - command timeout, retry, queued-continuation, and send-failure logs now use
+    only anonymous target type, command code, attempt, elapsed/timeout, and
+    aggregate counts; no production command log formats a label, room identity,
+    panel MAC, raw target, or expected-value dictionary;
+  - connection retry logs now use the stable failure category, and invalid
+    measurement debug logs no longer include a panel MAC;
+  - caplog regression coverage exercises the real coalesce, queued
+    continuation, retry, final timeout, failed send, and invalid measurement
+    paths with room/MAC canaries;
+  - diagnostics counters are now asserted through hub lifecycle/parser/status/
+    command event paths rather than direct `HealthTracker.increment()` calls.
+- Fix verification: 57 focused diagnostics/command/protocol tests and 116
+  complete native tests passed; compileall, translation JSON validation,
+  raw-frame source scan, and diff check passed.
 - Fix round 1 implemented locally: stale confirmation now revalidates and
   removes under the shared hub panel-lifecycle lock; reports and stale-Repair
   creation use that same lock. Diagnostics exports only failure/command

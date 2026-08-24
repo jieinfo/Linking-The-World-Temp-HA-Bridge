@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import json
+import logging
 from types import SimpleNamespace
+
+import pytest
 
 from custom_components.linking_the_world_temp_ha.binary_sensor import (
     ControllerConnectionSensor,
@@ -15,8 +18,13 @@ from custom_components.linking_the_world_temp_ha.diagnostics import (
     build_anonymous_panel_map,
 )
 from custom_components.linking_the_world_temp_ha.health import HealthTracker
+import custom_components.linking_the_world_temp_ha.hub as hub_module
 from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from custom_components.linking_the_world_temp_ha.protocol import ThermostatState
+from custom_components.linking_the_world_temp_ha.protocol import (
+    TcpConnectError,
+    tlv,
+)
 from custom_components.linking_the_world_temp_ha.runtime import (
     ConnectionStage,
     FailureKind,
@@ -58,6 +66,110 @@ async def _hub_with_two_panels(hass, mock_config_entry) -> LinkingTempHub:
         ),
     }
     return hub
+
+
+class _CommandClient:
+    """Small ready client that records real hub command paths."""
+
+    def __init__(self, *, fail_send: bool = False) -> None:
+        self.fail_send = fail_send
+        self.commands: list[tuple[bytes, int, int | None]] = []
+        self.status_requests = 0
+
+    async def send_command(self, mac: bytes, command: int, value: int | None) -> None:
+        self.commands.append((mac, command, value))
+        if self.fail_send:
+            raise ConnectionError("send failed")
+
+    async def request_status(self) -> None:
+        self.status_requests += 1
+
+
+class _LifecycleClient(_CommandClient):
+    """Client boundary double which drives the hub's normal lifecycle callbacks."""
+
+    reader_alive = True
+    reader_error = None
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_frame = None
+        self.on_status = None
+        self.on_stage = None
+        self.on_parser_event = None
+
+    async def connect(self) -> None:
+        assert self.on_stage is not None
+        for stage in ("connecting", "handshaking", "authenticating", "ready"):
+            await self.on_stage(stage)
+
+    async def heartbeat(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        self.reader_alive = False
+
+
+def _ready_command_hub(hass, mock_config_entry) -> LinkingTempHub:
+    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
+    hub.allow_control = True
+    hub.connected = True
+    hub.protocol_verified = True
+    hub.health.mark_stage(ConnectionStage.READY)
+    hub.command_min_interval = 0
+    hub.command_confirmation_timeout = 1
+    hub.thermostats = {
+        "aabbccddeeff0011": ThermostatState(
+            mac=bytes.fromhex("aabbccddeeff0011"),
+            room_id="ROOM-ID-CANARY",
+            target_temperature=21,
+            current_temperature=25,
+            humidity=60,
+            available=True,
+        )
+    }
+    hub.room_names["ROOM-ID-CANARY"] = "ROOM-NAME-CANARY"
+    return hub
+
+
+async def test_production_command_logs_never_expose_panel_identity(
+    hass, mock_config_entry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Timeout, retry, queue, and send-failure logs retain only safe context."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    caplog.set_level(logging.DEBUG, logger="custom_components.linking_the_world_temp_ha")
+    invalid_measurement = (
+        tlv(0x0004, bytes.fromhex("aabbccddeeff0011"))
+        + tlv(0x0075, hub.tech_system_mac)
+        + tlv(0x0030, b"ROOM-ID-CANARY")
+        + tlv(0x000A, bytes((44, 0xE8, 0x03, 100, 0)))
+        + tlv(0x000B, b"\x01")
+    )
+    await hub._async_status_received(invalid_measurement)
+
+    await hub.async_set_thermostat_temperature("aabbccddeeff0011", 22)
+    await hub.async_set_thermostat_temperature("aabbccddeeff0011", 23)
+    pending = hub._pending["thermostat_aabbccddeeff0011"]
+    pending.deadline = 0
+    await hub._async_expire_pending(1)
+    await hub._async_dispatch_queued()
+    pending = hub._pending["thermostat_aabbccddeeff0011"]
+    pending.deadline = 0
+    await hub._async_expire_pending(2)
+    pending.deadline = 0
+    await hub._async_expire_pending(3)
+
+    failing_hub = _ready_command_hub(hass, mock_config_entry)
+    failing_hub._client = _CommandClient(fail_send=True)  # type: ignore[assignment]
+    with pytest.raises(ConnectionError):
+        await failing_hub.async_set_thermostat_temperature("aabbccddeeff0011", 24)
+
+    production_logs = "\n".join(record.getMessage() for record in caplog.records)
+    for canary in ("ROOM-NAME-CANARY", "ROOM-ID-CANARY", "aabbccddeeff0011"):
+        assert canary not in production_logs
+    assert "MC7021 command send failed: target_type=thermostat" in production_logs
 
 
 async def test_diagnostics_redact_all_secret_canaries_and_anonymize_panels(
@@ -114,39 +226,78 @@ async def test_diagnostics_redact_all_secret_canaries_and_anonymize_panels(
     }
 
 
-async def test_diagnostics_export_metrics_and_panel_observation_details(
-    hass, mock_config_entry
+async def test_diagnostics_metrics_follow_real_runtime_event_paths(
+    hass, mock_config_entry, monkeypatch
 ) -> None:
-    """The support snapshot contains useful counters without object dumps."""
-    hub = await _hub_with_two_panels(hass, mock_config_entry)
-    hub.health.mark_stage(ConnectionStage.READY)
-    hub.health.record_failure(FailureKind.STATUS_SILENCE, "status stream silent")
-    for counter in (
-        "connection_attempts",
-        "connection_successes",
-        "reconnects",
-        "frames_malformed",
-        "invalid_measurements",
-        "commands_sent",
-        "commands_confirmed",
-        "commands_retried",
-        "commands_timed_out",
-    ):
-        hub.health.increment(counter)
-    hub.health.record_confirmation_latency(0.42)
-    hub._pending = {"system": object()}
-    hub._queued = {"thermostat": object()}
-    mock_config_entry.runtime_data = SimpleNamespace(hub=hub, health=hub.health)
+    """Diagnostics counts events at production paths rather than test seeding."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    await hub.panel_registry.async_load()
+    lifecycle_client = _LifecycleClient()
+    monkeypatch.setattr(hub_module, "AsyncMoorgenClient", lambda *_args: lifecycle_client)
 
+    async def stop_after_connect(_client) -> None:
+        hub._stop.set()
+
+    hub._async_session_loop = stop_after_connect  # type: ignore[method-assign]
+    await hub._async_run()
+    assert lifecycle_client.on_parser_event is not None
+    await lifecycle_client.on_parser_event("frames_malformed", 1)
+    await lifecycle_client.on_parser_event("frames_resynchronized", 1)
+
+    hub._stop.clear()
+    hub.connected = True
+    hub.protocol_verified = True
+    hub.health.mark_stage(ConnectionStage.READY)
+    invalid_measurement = (
+        tlv(0x0004, bytes.fromhex("aabbccddeeff0011"))
+        + tlv(0x0075, hub.tech_system_mac)
+        + tlv(0x0030, b"ROOM-ID-CANARY")
+        + tlv(0x000A, bytes((44, 0xE8, 0x03, 100, 0)))
+        + tlv(0x000B, b"\x01")
+    )
+    await hub._async_status_received(invalid_measurement)
+
+    command_client = _CommandClient()
+    hub._client = command_client  # type: ignore[assignment]
+    await hub.async_set_system_power(True)
+    hub._confirm_pending("system", {"power": "ON"})
+    await hub.async_set_thermostat_temperature("aabbccddeeff0011", 22)
+    await hub.async_set_thermostat_temperature("aabbccddeeff0011", 23)
+    pending = hub._pending["thermostat_aabbccddeeff0011"]
+    pending.deadline = 0
+    await hub._async_expire_pending(1)
+    await hub._async_dispatch_queued()
+    pending = hub._pending["thermostat_aabbccddeeff0011"]
+    pending.deadline = 0
+    await hub._async_expire_pending(2)
+    pending.deadline = 0
+    await hub._async_expire_pending(3)
+
+    hub._record_connection_failure(TcpConnectError("connection refused"))
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub, health=hub.health)
     result = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+
     runtime = result["runtime"]
     health = runtime["health"]
 
     assert health["stage"] == "ready"
-    assert health["failure_kind"] == "status_silence"
+    assert health["failure_kind"] == "tcp_timeout"
+    assert health["counters"]["connection_attempts"] == 1
+    assert health["counters"]["connection_successes"] == 1
+    assert health["counters"]["reconnects"] == 0
+    assert health["counters"]["disconnects"] == 1
+    assert health["counters"]["handshake_successes"] == 1
+    assert health["counters"]["login_successes"] == 1
+    assert health["counters"]["frames_malformed"] == 1
+    assert health["counters"]["frames_resynchronized"] == 1
+    assert health["counters"]["invalid_measurements"] == 1
+    assert health["counters"]["commands_sent"] == 4
+    assert health["counters"]["commands_confirmed"] == 1
     assert health["counters"]["commands_retried"] == 1
-    assert health["confirmation_latency_summary"]["mean"] == 0.42
-    assert runtime["command_queue"] == {"pending": 1, "queued": 1}
+    assert health["counters"]["commands_coalesced"] == 1
+    assert health["counters"]["commands_timed_out"] == 3
+    assert health["confirmation_latency_summary"]["count"] == 1
+    assert runtime["command_queue"] == {"pending": 0, "queued": 0}
     for panel in runtime["panels"].values():
         assert isinstance(panel["last_report_age_seconds"], float)
         assert panel["last_report_age_seconds"] >= 0

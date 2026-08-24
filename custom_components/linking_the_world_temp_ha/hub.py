@@ -328,6 +328,11 @@ class LinkingTempHub:
             return thermostat
         raise HomeAssistantError("该房间温控面板尚未被主机发现")
 
+    @staticmethod
+    def _command_target_type(target: str) -> str:
+        """Return a stable command category without household identity."""
+        return "thermostat" if target.startswith("thermostat_") else "system"
+
     async def _async_run(self) -> None:
         retry_delay = 5
         while not self._stop.is_set():
@@ -381,8 +386,8 @@ class LinkingTempHub:
                 self._record_connection_failure(error)
                 self.last_connection_error = str(error) or error.__class__.__name__
                 _LOGGER.warning(
-                    "MC7021 session unavailable: %s; retrying in %ss",
-                    error,
+                    "MC7021 session unavailable: failure_kind=%s retry_delay_seconds=%s",
+                    self.health.failure_kind.value,
                     retry_delay,
                 )
             finally:
@@ -675,6 +680,12 @@ class LinkingTempHub:
             except Exception:
                 self._pending.pop(target, None)
                 self.last_command_status = f"failed:{label}"
+                _LOGGER.warning(
+                    "MC7021 command send failed: target_type=%s command_code=%d "
+                    "attempt=1",
+                    self._command_target_type(target),
+                    command,
+                )
                 self._notify()
                 raise
 
@@ -693,9 +704,13 @@ class LinkingTempHub:
                 queued.value,
                 coalesce=True,
             )
-        except HomeAssistantError as error:
+        except HomeAssistantError:
             self.last_command_status = f"failed:{queued.label}"
-            _LOGGER.warning("Queued command %s was not sent: %s", queued.label, error)
+            _LOGGER.warning(
+                "Queued command was not sent: target_type=%s command_code=%d",
+                self._command_target_type(queued.target),
+                queued.command,
+            )
             self._notify()
 
     async def _async_poll_pending_status(self, now: float) -> None:
@@ -711,8 +726,17 @@ class LinkingTempHub:
         for pending in due:
             pending.next_status_poll_at = now + STATUS_POLL_INTERVAL
         _LOGGER.debug(
-            "Requested MC7021 status for pending confirmations: targets=%s",
-            [pending.target for pending in due],
+            "Requested MC7021 status for pending confirmations: pending_count=%d "
+            "thermostat_count=%d system_count=%d",
+            len(due),
+            sum(
+                self._command_target_type(pending.target) == "thermostat"
+                for pending in due
+            ),
+            sum(
+                self._command_target_type(pending.target) == "system"
+                for pending in due
+            ),
         )
 
     def _confirm_pending(self, target: str, actual: dict[str, str | None]) -> None:
@@ -744,11 +768,13 @@ class LinkingTempHub:
                     self.last_command_status = f"timeout_continuing:{pending.label}"
                     _LOGGER.warning(
                         "Command confirmation timed out; continuing latest queued "
-                        "value: label=%s target=%s expected=%s waited=%.1fs",
-                        pending.label,
-                        target,
-                        pending.expected,
+                        "value: target_type=%s command_code=%d attempt=%d "
+                        "elapsed_seconds=%.1f confirmation_timeout_seconds=%.1f",
+                        self._command_target_type(target),
+                        pending.command,
+                        pending.attempts,
                         now - pending.sent_at,
+                        self.command_confirmation_timeout,
                     )
                 elif temperature_retry_is_allowed(pending):
                     self.health.increment("commands_timed_out")
@@ -758,13 +784,14 @@ class LinkingTempHub:
                     self.health.increment("commands_timed_out")
                     self.last_command_status = f"timeout:{pending.label}"
                     _LOGGER.error(
-                        "MC7021 command confirmation timed out: label=%s target=%s "
-                        "expected=%s attempts=%d waited=%.1fs",
-                        pending.label,
-                        target,
-                        pending.expected,
+                        "MC7021 command confirmation timed out: target_type=%s "
+                        "command_code=%d attempt=%d elapsed_seconds=%.1f "
+                        "confirmation_timeout_seconds=%.1f",
+                        self._command_target_type(target),
+                        pending.command,
                         pending.attempts,
                         now - pending.sent_at,
+                        self.command_confirmation_timeout,
                     )
         if expired:
             self._notify()
@@ -794,11 +821,12 @@ class LinkingTempHub:
         self.last_command_status = f"retrying:{pending.label}"
         _LOGGER.warning(
             "Thermostat command confirmation delayed; retrying once: "
-            "label=%s target=%s expected=%s attempt=%d",
-            pending.label,
-            pending.target,
-            pending.expected,
+            "target_type=%s command_code=%d attempt=%d "
+            "confirmation_timeout_seconds=%.1f",
+            self._command_target_type(pending.target),
+            pending.command,
             pending.attempts,
+            self.command_confirmation_timeout,
         )
         try:
             await client.send_command(pending.mac, pending.command, pending.value)
@@ -809,6 +837,13 @@ class LinkingTempHub:
             if self._pending.get(pending.target) is pending:
                 self._pending.pop(pending.target, None)
                 self.last_command_status = f"failed:{pending.label}"
+                _LOGGER.warning(
+                    "MC7021 command retry send failed: target_type=%s "
+                    "command_code=%d attempt=%d",
+                    self._command_target_type(pending.target),
+                    pending.command,
+                    pending.attempts,
+                )
             raise
 
     async def _async_frame_received(self, frame: YasHcpFrame) -> None:
@@ -895,9 +930,8 @@ class LinkingTempHub:
             if not measurements_valid:
                 self.health.increment("invalid_measurements")
                 _LOGGER.debug(
-                    "Ignored implausible thermostat measurements: mac=%s "
+                    "Ignored implausible thermostat measurements: "
                     "temperature=%s humidity=%s",
-                    mac_hex,
                     reported_temperature,
                     reported_humidity,
                 )
