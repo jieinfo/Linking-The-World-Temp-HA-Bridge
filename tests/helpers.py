@@ -17,6 +17,7 @@ from custom_components.linking_the_world_temp_ha.protocol import (
 FrameReply: TypeAlias = YasHcpFrame | bytes | None
 CommandHandler: TypeAlias = Callable[[YasHcpFrame], Awaitable[None] | None]
 CLIENT_CLOSE_TIMEOUT = 0.25
+HANDSHAKE_READY_TIMEOUT = 1
 
 
 def _hello_reply() -> YasHcpFrame:
@@ -51,8 +52,11 @@ class FakeMC7021Server:
         self.port = 0
         self.received_frames: list[YasHcpFrame] = []
         self.received_frame_event = asyncio.Event()
+        self.client_connected = asyncio.Event()
+        self.handshake_complete = asyncio.Event()
         self._server: asyncio.AbstractServer | None = None
         self._writer: asyncio.StreamWriter | None = None
+        self._handshake_writer: asyncio.StreamWriter | None = None
         self._client_tasks: set[asyncio.Task[None]] = set()
         self._sequence = 0
         self.on_command: CommandHandler | None = None
@@ -91,6 +95,14 @@ class FakeMC7021Server:
         frame = YasHcpFrame(5, 0x0C, self._next_sequence(), body)
         await self.async_send_frames(frame)
 
+    async def async_wait_for_handshake(self) -> None:
+        """Wait until the active client has received a successful login reply."""
+        await asyncio.wait_for(
+            self.handshake_complete.wait(), timeout=HANDSHAKE_READY_TIMEOUT
+        )
+        if self._writer is not self._handshake_writer or self._writer.is_closing():
+            raise ConnectionError("MC7021 client disconnected before handshake completed")
+
     async def async_send_malformed(self, data: bytes) -> None:
         """Send raw malformed transport bytes to exercise decoder recovery."""
         await self._async_write(data)
@@ -125,7 +137,11 @@ class FakeMC7021Server:
         task = asyncio.current_task()
         assert task is not None
         self._client_tasks.add(task)
+        self.client_connected.clear()
+        self.handshake_complete.clear()
+        self._handshake_writer = None
         self._writer = writer
+        self.client_connected.set()
         decoder = YasHcpDecoder()
         if self.behavior.close_after_stage == "connect":
             await self.async_close_client()
@@ -193,6 +209,13 @@ class FakeMC7021Server:
                 if self._writer is not writer or writer.is_closing():
                     return
                 raise
+        if (
+            stage == "login"
+            and isinstance(reply, YasHcpFrame)
+            and (reply.kind, reply.opcode) == (2, 6)
+        ):
+            self._handshake_writer = writer
+            self.handshake_complete.set()
         if self.behavior.close_after_stage == stage:
             await self.async_close_client()
 

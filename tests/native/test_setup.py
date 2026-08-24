@@ -345,6 +345,15 @@ async def test_connection_stage_transitions_follow_protocol_setup(
     ]
 
 
+async def test_setup_fixture_waits_for_connected_authenticated_controller(
+    setup_integration, fake_controller
+) -> None:
+    """Push-driven tests receive a live session rather than a pending runner."""
+    assert fake_controller.client_connected.is_set()
+    assert fake_controller.handshake_complete.is_set()
+    assert setup_integration.hub.health.stage is ConnectionStage.READY
+
+
 async def test_fake_controller_handles_fragmented_malformed_and_status_frames(
     socket_enabled,
 ):
