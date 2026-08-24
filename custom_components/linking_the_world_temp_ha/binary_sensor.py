@@ -8,7 +8,6 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
 from .entity import LinkingTempEntity
 from .hub import LinkingTempHub
 
@@ -22,7 +21,7 @@ class ControllerConnectionSensor(LinkingTempEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return self.hub.connected
+        return self.hub.available
 
     @property
     def available(self) -> bool:
@@ -42,11 +41,11 @@ class ProtocolVerifiedSensor(LinkingTempEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        return self.hub.connected
+        return True
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    hub: LinkingTempHub = hass.data[DOMAIN][entry.entry_id]
+    hub: LinkingTempHub = entry.runtime_data.hub
     async_add_entities([ControllerConnectionSensor(hub), ProtocolVerifiedSensor(hub)])

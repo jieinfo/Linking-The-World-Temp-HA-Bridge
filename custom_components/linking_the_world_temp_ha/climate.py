@@ -9,11 +9,7 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (
-    DOMAIN,
-    THERMOSTAT_MAX_TEMPERATURE,
-    THERMOSTAT_MIN_TEMPERATURE,
-)
+from .const import THERMOSTAT_MAX_TEMPERATURE, THERMOSTAT_MIN_TEMPERATURE
 from .entity import LinkingThermostatEntity
 from .hub import LinkingTempHub
 from .thermostat_policy import can_operate_room_thermostat
@@ -88,7 +84,7 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    hub: LinkingTempHub = hass.data[DOMAIN][entry.entry_id]
+    hub: LinkingTempHub = entry.runtime_data.hub
     added: set[str] = set()
 
     @callback

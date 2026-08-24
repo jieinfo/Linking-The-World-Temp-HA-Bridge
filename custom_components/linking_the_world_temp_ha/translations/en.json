@@ -25,14 +25,30 @@
           "client_id": "Protocol client ID",
           "tech_system_mac": "Technology-system MAC"
         }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate the technology-system controller",
+        "description": "The controller rejected the existing credentials. Enter the local username and password; the integration reloads automatically after validation.",
+        "data": {
+          "username": "Local username",
+          "password": "Local password"
+        }
       }
     },
     "error": {
       "cannot_connect": "Unable to connect or log in to the controller",
+      "handshake_failed": "The controller did not complete the protocol handshake. Check the controller model and TCP port 9000 service.",
+      "login_timeout": "The controller login response timed out. Check controller availability and local credentials.",
+      "invalid_auth": "The controller rejected the login. Check the local controller username and password.",
+      "protocol_incompatible": "The controller returned a protocol response unsupported by this integration.",
       "invalid_config": "Invalid client ID or technology-system MAC",
       "unknown": "Unexpected error; check the Home Assistant log"
     },
-    "abort": {"already_configured": "This controller is already configured"}
+    "abort": {
+      "already_configured": "This controller is already configured",
+      "reauth_successful": "The local controller credentials were updated",
+      "reconfigure_successful": "The local controller configuration was updated"
+    }
   },
   "options": {
     "step": {
@@ -48,6 +64,51 @@
       }
     }
   },
+  "issues": {
+    "login_timeout": {
+      "title": "Technology-system controller login timed out repeatedly",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Reauthenticate local controller credentials",
+            "description": "The controller has not completed login three times in a row. Check that it is online, TCP port 9000, and the local username and password. Submitting opens the credential verification flow for this config entry.",
+            "data": {}
+          }
+        },
+        "abort": {"entry_not_found": "The associated config entry could not be found"}
+      }
+    },
+    "protocol_incompatible": {
+      "title": "Technology-system controller protocol is incompatible",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Try reconnecting to the controller",
+            "description": "The controller returned a protocol response unsupported by this version. After confirming firmware compatibility, submit to reload this integration and try again.",
+            "data": {}
+          }
+        },
+        "abort": {"entry_not_found": "The associated config entry could not be found"}
+      }
+    },
+    "stale_panel": {
+      "title": "Room thermostat panel has not reported for 30 days",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Remove stale room thermostat panel",
+            "description": "{room} ({short_mac}) has not sent a valid report since {last_report}. This action removes only this integration's panel entities and stored panel record; it does not delete Home Assistant automations. Cancel leaves everything unchanged. A future report from the same panel will be discovered again.",
+            "data": {}
+          }
+        },
+        "abort": {
+          "entry_not_found": "The associated config entry could not be found",
+          "entry_not_loaded": "The associated integration is not currently loaded",
+          "panel_no_longer_stale": "This panel reported again or is no longer eligible for removal. No changes were made."
+        }
+      }
+    }
+  },
   "entity": {
     "binary_sensor": {
       "controller_connection": {"name": "Controller connection"},
@@ -59,10 +120,48 @@
       "system_scene": {"name": "Scene"}
     },
     "sensor": {
-      "connection_error": {"name": "Last connection error"},
-      "protocol_status": {"name": "Protocol status"},
+      "connection_stage": {
+        "name": "Controller connection stage",
+        "state": {
+          "disconnected": "Disconnected",
+          "connecting": "Connecting",
+          "handshaking": "Handshaking",
+          "authenticating": "Authenticating",
+          "ready": "Ready"
+        }
+      },
+      "connection_error": {
+        "name": "Connection failure category",
+        "state": {
+          "none": "None",
+          "tcp_refused": "TCP connection refused",
+          "tcp_timeout": "TCP connection timed out",
+          "handshake_failed": "Handshake failed",
+          "login_timeout": "Login timed out",
+          "authentication_rejected": "Credentials rejected",
+          "protocol_incompatible": "Protocol incompatible",
+          "status_silence": "Status stream silent"
+        }
+      },
+      "protocol_status": {
+        "name": "Protocol status",
+        "state": {"waiting": "Waiting for verification", "verified": "Verified", "unknown": "Unknown"}
+      },
       "control_permission": {"name": "Control permission"},
-      "last_command": {"name": "Last command"},
+      "last_command": {
+        "name": "Last command state",
+        "state": {
+          "idle": "Idle",
+          "waiting": "Waiting for controller confirmation",
+          "queued": "Queued",
+          "confirmed": "Confirmed",
+          "retrying": "Retrying",
+          "timeout": "Confirmation timed out",
+          "timeout_continuing": "Timed out, continuing latest command",
+          "failed": "Send failed",
+          "unknown": "Unknown"
+        }
+      },
       "panel_count": {"name": "Discovered panel count"},
       "automation_temperature": {"name": "Automation temperature"},
       "automation_humidity": {"name": "Automation humidity"}

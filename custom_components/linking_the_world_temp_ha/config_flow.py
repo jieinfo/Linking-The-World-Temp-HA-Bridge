@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -31,7 +33,16 @@ from .const import (
     DEFAULT_USERNAME,
     DOMAIN,
 )
-from .protocol import AsyncMoorgenClient, CannotConnect, parse_device_mac
+from .protocol import (
+    AsyncMoorgenClient,
+    AuthenticationRejected,
+    CannotConnect,
+    HandshakeTimeout,
+    IncompatibleProtocol,
+    LoginTimeout,
+    TcpConnectError,
+    parse_device_mac,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,10 +122,67 @@ async def _async_validate_connection(data: dict[str, Any]) -> None:
         await client.close()
 
 
+def _connection_error_key(error: BaseException) -> str | None:
+    """Map expected transport failures to stable config-flow translation keys."""
+    if isinstance(error, AuthenticationRejected):
+        return "invalid_auth"
+    if isinstance(error, LoginTimeout):
+        return "login_timeout"
+    if isinstance(error, HandshakeTimeout):
+        return "handshake_failed"
+    if isinstance(error, IncompatibleProtocol):
+        return "protocol_incompatible"
+    if isinstance(error, (TcpConnectError, CannotConnect)):
+        return "cannot_connect"
+    return None
+
+
+def _reauth_schema(
+    defaults: Mapping[str, Any], *, include_submitted_password: bool = False
+) -> vol.Schema:
+    """Reauthentication deliberately exposes credentials only."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_USERNAME, default=defaults.get(CONF_USERNAME, "")): cv.string,
+            vol.Required(
+                CONF_PASSWORD,
+                default=(
+                    defaults.get(CONF_PASSWORD, "")
+                    if include_submitted_password
+                    else ""
+                ),
+            ): cv.string,
+        }
+    )
+
+
 class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle native integration setup."""
 
     VERSION = 1
+
+    @callback
+    def _async_update_entry_and_abort(
+        self,
+        entry: config_entries.ConfigEntry,
+        *,
+        data_updates: Mapping[str, Any],
+        reason: str,
+        unique_id: str | None = None,
+        title: str | None = None,
+    ) -> ConfigFlowResult:
+        """Update once and let the entry update listener schedule its reload.
+
+        Home Assistant 2026.8 disallows combining an entry update listener with
+        ``async_update_reload_and_abort`` because both paths schedule reloads.
+        """
+        self.hass.config_entries.async_update_entry(
+            entry,
+            data={**dict(entry.data), **data_updates},
+            **({"unique_id": unique_id} if unique_id is not None else {}),
+            **({"title": title} if title is not None else {}),
+        )
+        return self.async_abort(reason=reason)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -124,15 +192,16 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 normalized = _normalize_connection_data(user_input)
                 await _async_validate_connection(normalized)
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except (ValueError, vol.Invalid):
-                errors["base"] = "invalid_config"
-            except Exception:
-                _LOGGER.exception(
-                    "Unexpected error while validating the MC7021 connection"
-                )
-                errors["base"] = "unknown"
+            except Exception as error:  # noqa: BLE001 - expected errors map below.
+                if (error_key := _connection_error_key(error)) is not None:
+                    errors["base"] = error_key
+                elif isinstance(error, (ValueError, vol.Invalid)):
+                    errors["base"] = "invalid_config"
+                else:
+                    _LOGGER.exception(
+                        "Unexpected error while validating the MC7021 connection"
+                    )
+                    errors["base"] = "unknown"
             else:
                 unique_id = f"{normalized[CONF_HOST]}:{normalized[CONF_PORT]}"
                 await self.async_set_unique_id(unique_id)
@@ -157,15 +226,16 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 normalized = _normalize_connection_data(user_input)
                 await _async_validate_connection(normalized)
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except (ValueError, vol.Invalid):
-                errors["base"] = "invalid_config"
-            except Exception:
-                _LOGGER.exception(
-                    "Unexpected error while reconfiguring the MC7021 connection"
-                )
-                errors["base"] = "unknown"
+            except Exception as error:  # noqa: BLE001 - expected errors map below.
+                if (error_key := _connection_error_key(error)) is not None:
+                    errors["base"] = error_key
+                elif isinstance(error, (ValueError, vol.Invalid)):
+                    errors["base"] = "invalid_config"
+                else:
+                    _LOGGER.exception(
+                        "Unexpected error while reconfiguring the MC7021 connection"
+                    )
+                    errors["base"] = "unknown"
             else:
                 unique_id = f"{normalized[CONF_HOST]}:{normalized[CONF_PORT]}"
                 existing = await self.async_set_unique_id(
@@ -173,8 +243,9 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 if existing is not None and existing.entry_id != entry.entry_id:
                     return self.async_abort(reason="already_configured")
-                return self.async_update_reload_and_abort(
+                return self._async_update_entry_and_abort(
                     entry,
+                    reason="reconfigure_successful",
                     title=f"Linking The World Temp HA ({normalized[CONF_HOST]})",
                     unique_id=unique_id,
                     data_updates=normalized,
@@ -182,6 +253,48 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=_connection_schema(user_input or dict(entry.data)),
+            errors=errors,
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Ask for replacement credentials after an explicit controller rejection."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate credentials, then update and reload the original entry."""
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            candidate = {**dict(entry.data), **user_input}
+            try:
+                await _async_validate_connection(candidate)
+            except Exception as error:  # noqa: BLE001 - expected errors map below.
+                if (error_key := _connection_error_key(error)) is not None:
+                    errors["base"] = error_key
+                else:
+                    _LOGGER.exception("Unexpected error while reauthenticating MC7021")
+                    errors["base"] = "unknown"
+            else:
+                await self.async_set_unique_id(entry.unique_id)
+                self._abort_if_unique_id_mismatch()
+                return self._async_update_entry_and_abort(
+                    entry,
+                    reason="reauth_successful",
+                    data_updates={
+                        CONF_USERNAME: user_input[CONF_USERNAME],
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                    },
+                )
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=_reauth_schema(
+                {**dict(entry.data), **(user_input or {})},
+                include_submitted_password=user_input is not None,
+            ),
             errors=errors,
         )
 

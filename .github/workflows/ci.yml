@@ -27,7 +27,7 @@ jobs:
       - name: Verify generated add-on runtime is in sync
         run: python scripts/sync_addon_bridge.py --check
       - name: Run protocol tests
-        run: python -m unittest discover -v
+        run: python -m unittest -v test_protocol
       - name: Validate add-on metadata
         run: |
           python - <<'PY'
@@ -44,3 +44,21 @@ jobs:
           PY
       - name: Build Home Assistant add-on image
         run: docker build --build-arg BUILD_ARCH=amd64 linking_the_world_temp_ha_bridge_addon
+
+  native:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pytest_ha: ['0.13.354', '0.13.357']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install native test dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest-cov==7.1.0 pytest-homeassistant-custom-component==${{ matrix.pytest_ha }}
+      - name: Run native integration tests
+        run: pytest -q --cov=custom_components.linking_the_world_temp_ha --cov-report=term-missing --cov-fail-under=95

@@ -17,6 +17,9 @@ MAGIC = b"dooyashcp"
 VERSION = 1
 TRAILER = b"#"
 MAX_PAYLOAD_LENGTH = 16_384
+CONNECT_TIMEOUT = 8
+HELLO_TIMEOUT = 8
+LOGIN_TIMEOUT = 8
 TECH_SYSTEM_MAC = bytes.fromhex("ff00ffffffff00ff")
 
 CLIENT_PUBLIC_KEY = b"""-----BEGIN PUBLIC KEY-----
@@ -41,8 +44,32 @@ class ProtocolError(Exception):
     """Base protocol error."""
 
 
-class CannotConnect(ProtocolError):
-    """The controller cannot be reached or did not complete the handshake."""
+class MoorgenConnectionError(Exception):
+    """The controller connection could not complete."""
+
+
+class TcpConnectError(MoorgenConnectionError):
+    """The TCP socket could not be opened."""
+
+
+class HandshakeTimeout(MoorgenConnectionError):
+    """The controller did not complete the hello exchange."""
+
+
+class LoginTimeout(MoorgenConnectionError):
+    """The controller did not complete the login exchange."""
+
+
+class AuthenticationRejected(MoorgenConnectionError):
+    """The controller explicitly rejected the supplied credentials."""
+
+
+class IncompatibleProtocol(MoorgenConnectionError):
+    """The controller sent a response this client does not understand."""
+
+
+# Retain the historical catch-all name while callers move to typed failures.
+CannotConnect = MoorgenConnectionError
 
 
 @dataclass(frozen=True)
@@ -66,6 +93,10 @@ class YasHcpDecoder:
 
     def __init__(self) -> None:
         self._buffer = bytearray()
+        self.frames_decoded = 0
+        self.frames_malformed = 0
+        self.frames_resynchronized = 0
+        self.bytes_discarded = 0
 
     def feed(self, data: bytes) -> list[YasHcpFrame]:
         self._buffer.extend(data)
@@ -73,15 +104,22 @@ class YasHcpDecoder:
         while True:
             start = self._buffer.find(b"#")
             if start < 0:
+                self.bytes_discarded += len(self._buffer)
+                if self._buffer:
+                    self.frames_resynchronized += 1
                 self._buffer.clear()
                 return output
             if start:
+                self.bytes_discarded += start
+                self.frames_resynchronized += 1
                 del self._buffer[:start]
             if len(self._buffer) < 3:
                 return output
             prefix_length = min(len(MAGIC), len(self._buffer) - 3)
             if bytes(self._buffer[3 : 3 + prefix_length]) != MAGIC[:prefix_length]:
                 del self._buffer[0]
+                self.bytes_discarded += 1
+                self.frames_resynchronized += 1
                 continue
             if prefix_length < len(MAGIC):
                 return output
@@ -91,6 +129,9 @@ class YasHcpDecoder:
                     "Discarded YAS HCP frame with excessive length: %d", payload_length
                 )
                 del self._buffer[0]
+                self.frames_malformed += 1
+                self.bytes_discarded += 1
+                self.frames_resynchronized += 1
                 continue
             frame_length = 3 + payload_length
             if len(self._buffer) < frame_length:
@@ -105,6 +146,7 @@ class YasHcpDecoder:
                 _LOGGER.warning(
                     "Discarded malformed YAS HCP payload (%d bytes)", len(raw)
                 )
+                self.frames_malformed += 1
                 continue
             body_length = struct.unpack_from("<H", raw, len(MAGIC) + 5)[0]
             expected_length = len(MAGIC) + 7 + body_length + len(TRAILER)
@@ -112,6 +154,7 @@ class YasHcpDecoder:
                 _LOGGER.warning(
                     "Discarded YAS HCP payload with invalid length (%d bytes)", len(raw)
                 )
+                self.frames_malformed += 1
                 continue
             output.append(
                 YasHcpFrame(
@@ -121,6 +164,7 @@ class YasHcpDecoder:
                     body=raw[len(MAGIC) + 7 : len(MAGIC) + 7 + body_length],
                 )
             )
+            self.frames_decoded += 1
 
 
 @dataclass
@@ -205,7 +249,23 @@ def iter_tlvs(data: bytes):
         offset += length
 
 
+def is_complete_tlv_body(data: bytes) -> bool:
+    """Return whether *all* bytes form complete TLVs without a trailing fragment."""
+    offset = 0
+    while offset < len(data):
+        if len(data) - offset < 4:
+            return False
+        _tag, length = struct.unpack_from("<HH", data, offset)
+        offset += 4
+        if length > len(data) - offset:
+            return False
+        offset += length
+    return True
+
+
 def parse_tlvs(data: bytes) -> dict[int, bytes]:
+    if not is_complete_tlv_body(data):
+        return {}
     return dict(iter_tlvs(data))
 
 
@@ -254,6 +314,8 @@ def decode_thermostat_status(
 
 FrameCallback = Callable[[YasHcpFrame], Awaitable[None] | None]
 StatusCallback = Callable[[bytes], Awaitable[None] | None]
+StageCallback = Callable[[str], Awaitable[None] | None]
+ParserEventCallback = Callable[[str, int], Awaitable[None] | None]
 
 
 class AsyncMoorgenClient:
@@ -278,11 +340,13 @@ class AsyncMoorgenClient:
         self.client_id = client_id.lower()
         self.on_frame: FrameCallback | None = None
         self.on_status: StatusCallback | None = None
+        self.on_stage: StageCallback | None = None
+        self.on_parser_event: ParserEventCallback | None = None
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._decoder = YasHcpDecoder()
-        self._inbox: asyncio.Queue[YasHcpFrame] = asyncio.Queue()
+        self._inbox: asyncio.Queue[YasHcpFrame | None] = asyncio.Queue()
         self._write_lock = asyncio.Lock()
         self._sequence = 0
         self._ready = False
@@ -299,23 +363,86 @@ class AsyncMoorgenClient:
 
     async def connect(self) -> None:
         try:
+            await self._emit_stage("connecting")
+            await self._async_open_socket()
+            await self._emit_stage("handshaking")
+            await self._async_complete_hello()
+            await self._emit_stage("authenticating")
+            await self._async_complete_login()
+            await self._send_initial_queries()
+            self._ready = True
+            await self._emit_stage("ready")
+        except MoorgenConnectionError:
+            await self.close()
+            raise
+        except asyncio.CancelledError:
+            await self.close()
+            raise
+        except (OSError, ConnectionError) as error:
+            await self.close()
+            raise IncompatibleProtocol(
+                "MC7021 disconnected while starting the authenticated session"
+            ) from error
+
+    async def _async_open_socket(self) -> None:
+        try:
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port), timeout=8
+                asyncio.open_connection(self.host, self.port), timeout=CONNECT_TIMEOUT
             )
             self.last_received_at = time.monotonic()
             self.reader_error = None
+            self._decoder = YasHcpDecoder()
+            self._inbox = asyncio.Queue()
             self._reader_task = asyncio.create_task(
-                self._read_loop(), name="linking-temp-mc7021-reader"
+                self._read_loop(self._inbox), name="linking-temp-mc7021-reader"
             )
+        except (OSError, TimeoutError, asyncio.TimeoutError) as error:
+            raise TcpConnectError(
+                f"Could not connect to MC7021 at {self.host}:{self.port}"
+            ) from error
+
+    async def _async_complete_hello(self) -> None:
+        try:
             await self._send_hello()
-            await self._wait_for(1, 3, 8)
-            await self._send_login()
-            await self._wait_for(2, 6, 8)
-            await self._send_initial_queries()
-            self._ready = True
+            await self._wait_for(1, 3, HELLO_TIMEOUT)
+        except IncompatibleProtocol:
+            raise
         except (OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as error:
-            await self.close()
-            raise CannotConnect(str(error)) from error
+            raise HandshakeTimeout(
+                "MC7021 did not complete the hello exchange"
+            ) from error
+
+    async def _async_complete_login(self) -> None:
+        try:
+            self._discard_pre_login_frames()
+            await self._send_login()
+            reply = await self._wait_for_opcodes(2, {5, 6}, LOGIN_TIMEOUT)
+        except IncompatibleProtocol:
+            raise
+        except (OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as error:
+            raise LoginTimeout("MC7021 did not complete the login exchange") from error
+
+        if reply.opcode == 6:
+            return
+        if any(
+            tag == 0x031C and value == b"\x01"
+            for tag, value in iter_tlvs(reply.body)
+        ):
+            raise AuthenticationRejected("MC7021 rejected the supplied credentials")
+        raise IncompatibleProtocol("MC7021 sent an unknown login rejection response")
+
+    def _discard_pre_login_frames(self) -> None:
+        """Discard stale login replies before sending credentials for this session."""
+        deferred: list[YasHcpFrame | None] = []
+        while True:
+            try:
+                frame = self._inbox.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if frame is None or frame.kind != 2:
+                deferred.append(frame)
+        for frame in deferred:
+            self._inbox.put_nowait(frame)
 
     async def close(self) -> None:
         self._ready = False
@@ -364,6 +491,36 @@ class AsyncMoorgenClient:
         body += bytes.fromhex("13021000") + self.client_id.encode("ascii")
         await self._send(1, 1, body)
 
+    async def _emit_stage(self, stage: str) -> None:
+        """Forward lifecycle boundaries without exposing protocol payloads."""
+        if self.on_stage is None:
+            return
+        result = self.on_stage(stage)
+        if result is not None:
+            await result
+
+    async def _emit_parser_changes(
+        self, before: tuple[int, int, int, int]
+    ) -> None:
+        """Report parser counters only, never the bytes that produced them."""
+        if self.on_parser_event is None:
+            return
+        after = (
+            self._decoder.frames_decoded,
+            self._decoder.frames_malformed,
+            self._decoder.frames_resynchronized,
+            self._decoder.bytes_discarded,
+        )
+        for name, change in zip(
+            ("frames_decoded", "frames_malformed", "frames_resynchronized", "bytes_discarded"),
+            (current - previous for current, previous in zip(after, before)),
+            strict=True,
+        ):
+            if change > 0:
+                result = self.on_parser_event(name, change)
+                if result is not None:
+                    await result
+
     async def _send_login(self) -> None:
         await self._send(
             2,
@@ -399,47 +556,66 @@ class AsyncMoorgenClient:
             self._writer.write(frame.encode())
             await self._writer.drain()
             _LOGGER.debug(
-                "Sent MC7021 kind=%02x opcode=%02x seq=%d body=%s",
+                "Sent MC7021 kind=%02x opcode=%02x seq=%d body_length=%d",
                 kind,
                 opcode,
                 frame.sequence,
-                body.hex(),
+                len(body),
             )
 
     async def _wait_for(self, kind: int, opcode: int, timeout: float) -> YasHcpFrame:
-        deferred: list[YasHcpFrame] = []
-        deadline = asyncio.get_running_loop().time() + timeout
-        try:
-            while True:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"MC7021 did not return kind={kind:#x}, opcode={opcode:#x}"
-                    )
-                try:
-                    frame = await asyncio.wait_for(self._inbox.get(), remaining)
-                except asyncio.TimeoutError as error:
-                    raise TimeoutError(
-                        f"MC7021 did not return kind={kind:#x}, opcode={opcode:#x}"
-                    ) from error
-                if frame.kind == kind and frame.opcode == opcode:
-                    return frame
-                deferred.append(frame)
-        finally:
-            for frame in deferred:
-                self._inbox.put_nowait(frame)
+        return await self._wait_for_opcodes(kind, {opcode}, timeout)
 
-    async def _read_loop(self) -> None:
+    async def _wait_for_opcodes(
+        self, kind: int, opcodes: set[int], timeout: float
+    ) -> YasHcpFrame:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"MC7021 did not return kind={kind:#x}, opcode={opcodes}"
+                )
+            try:
+                frame = await asyncio.wait_for(self._inbox.get(), remaining)
+            except asyncio.TimeoutError as error:
+                raise TimeoutError(
+                    f"MC7021 did not return kind={kind:#x}, opcode={opcodes}"
+                ) from error
+            if frame is None:
+                if self.reader_error is not None:
+                    raise self.reader_error
+                raise ConnectionError("MC7021 closed the TCP stream")
+            if frame.kind == kind:
+                if frame.opcode in opcodes:
+                    return frame
+                raise IncompatibleProtocol(
+                    "MC7021 returned an unexpected response "
+                    f"kind={frame.kind:#x}, opcode={frame.opcode:#x}"
+                )
+
+    async def _read_loop(self, inbox: asyncio.Queue[YasHcpFrame | None]) -> None:
         assert self._reader is not None
         try:
             while data := await self._reader.read(4096):
                 self.last_received_at = time.monotonic()
-                for frame in self._decoder.feed(data):
+                before = (
+                    self._decoder.frames_decoded,
+                    self._decoder.frames_malformed,
+                    self._decoder.frames_resynchronized,
+                    self._decoder.bytes_discarded,
+                )
+                frames = self._decoder.feed(data)
+                await self._emit_parser_changes(before)
+                for frame in frames:
+                    inbox.put_nowait(frame)
+                for frame in frames:
                     _LOGGER.debug(
-                        "Received MC7021 kind=%02x opcode=%02x body=%s",
+                        "Received MC7021 kind=%02x opcode=%02x seq=%d body_length=%d",
                         frame.kind,
                         frame.opcode,
-                        frame.body.hex(),
+                        frame.sequence,
+                        len(frame.body),
                     )
                     if self.on_frame is not None:
                         result = self.on_frame(frame)
@@ -453,8 +629,6 @@ class AsyncMoorgenClient:
                         result = self.on_status(frame.body)
                         if result is not None:
                             await result
-                    else:
-                        self._inbox.put_nowait(frame)
             raise ConnectionError("MC7021 closed the TCP stream")
         except asyncio.CancelledError:
             raise
@@ -462,3 +636,4 @@ class AsyncMoorgenClient:
             self.reader_error = error
         finally:
             self._ready = False
+            inbox.put_nowait(None)

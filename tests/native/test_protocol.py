@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
+import struct
 import sys
 import types
 import unittest
@@ -31,8 +33,35 @@ class DecoderTests(unittest.TestCase):
         decoder = protocol.YasHcpDecoder()
         self.assertEqual(decoder.feed(b"noise#bad" + frame.encode()), [frame])
 
+    def test_decoder_bounds_corrupt_lengths_and_recovers_the_next_frame(self) -> None:
+        """Corrupt prefixes and payloads do not poison a later valid status frame."""
+        decoder = protocol.YasHcpDecoder()
+        excessive = b"#" + struct.pack("<H", protocol.MAX_PAYLOAD_LENGTH + 1)
+        excessive += protocol.MAGIC
+        malformed = b"#" + struct.pack("<H", 12) + protocol.MAGIC + b"\x01\x05\x0c\x00\x00\x00\x00\x00"
+        invalid_length = b"#" + struct.pack("<H", 14) + protocol.MAGIC + b"\x01\x05\x0c\x00\x05\x00\x00\x00"
+        valid = protocol.YasHcpFrame(5, 12, 7, b"ok")
+
+        self.assertEqual(decoder.feed(excessive + malformed + invalid_length + valid.encode()), [valid])
+        self.assertGreaterEqual(decoder.frames_malformed, 2)
+        self.assertGreater(decoder.bytes_discarded, 0)
+
+    def test_decoder_retains_incomplete_prefix_until_the_rest_arrives(self) -> None:
+        decoder = protocol.YasHcpDecoder()
+        frame = protocol.YasHcpFrame(1, 3, 1, b"")
+        self.assertEqual(decoder.feed(frame.encode()[:5]), [])
+        self.assertEqual(decoder.feed(frame.encode()[5:]), [frame])
+
 
 class StatusTests(unittest.TestCase):
+    def test_truncated_status_tlv_is_rejected_without_partial_decoding(self) -> None:
+        mac = bytes.fromhex("ff00ffffffff00ff")
+        body = protocol.tlv(0x0004, mac) + protocol.tlv(0x000B, b"\x01")
+        body += b"\x0a\x00\x05\x00\x01"
+
+        self.assertFalse(protocol.is_complete_tlv_body(body))
+        self.assertEqual(protocol.decode_tech_system_status(body, mac), {})
+
     def test_total_control_status(self) -> None:
         mac = bytes.fromhex("ff00ffffffff00ff")
         body = protocol.tlv(0x0004, mac)
@@ -106,6 +135,39 @@ class StatusTests(unittest.TestCase):
         )
         self.assertIsNone(current.current_temperature)
         self.assertIsNone(current.humidity)
+
+    def test_tlv_and_text_validation_rejects_partial_or_invalid_values(self) -> None:
+        self.assertFalse(protocol.is_complete_tlv_body(b"\x01\x00"))
+        self.assertEqual(protocol.parse_tlvs(b"\x01\x00\x02\x00x"), {})
+        self.assertEqual(list(protocol.iter_tlvs(b"\x01\x00\x04\x00x")), [])
+        self.assertEqual(protocol.decode_text(b"\xb2\xe2\xca\xd4"), "测试")
+        for value in ("", "0011", "not-a-mac"):
+            with self.assertRaises(ValueError):
+                protocol.parse_device_mac(value)
+
+
+class ClientEdgeTests(unittest.IsolatedAsyncioTestCase):
+    def test_client_rejects_invalid_identity_before_opening_a_socket(self) -> None:
+        with self.assertRaises(ValueError):
+            protocol.AsyncMoorgenClient("127.0.0.1", 9000, "admin", "secret", "bad")
+
+    async def test_client_rejects_commands_without_a_ready_session(self) -> None:
+        client = protocol.AsyncMoorgenClient("127.0.0.1", 9000, "admin", "secret")
+        with self.assertRaises(ConnectionError):
+            await client.send_command(bytes.fromhex("ff00ffffffff01ff"), 3, 44)
+        with self.assertRaises(ConnectionError):
+            await client._send(4, 9, b"")
+
+    async def test_waiter_reports_timeout_eof_and_unexpected_frame(self) -> None:
+        client = protocol.AsyncMoorgenClient("127.0.0.1", 9000, "admin", "secret")
+        with self.assertRaises(TimeoutError):
+            await client._wait_for(1, 3, 0)
+        client._inbox.put_nowait(None)
+        with self.assertRaises(ConnectionError):
+            await client._wait_for(1, 3, 0.1)
+        client._inbox.put_nowait(protocol.YasHcpFrame(1, 4, 0, b""))
+        with self.assertRaises(protocol.IncompatibleProtocol):
+            await client._wait_for(1, 3, 0.1)
 
 
 if __name__ == "__main__":

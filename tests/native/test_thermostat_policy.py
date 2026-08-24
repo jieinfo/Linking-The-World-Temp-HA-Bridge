@@ -107,6 +107,10 @@ class ThermostatPolicyTests(unittest.TestCase):
             policy.room_thermostat_block_reason("ON", "dehumidify"),
             "当前为除湿模式，房间温控面板由科技系统总控强制关闭",
         )
+        self.assertEqual(
+            policy.room_thermostat_block_reason("ON", None),
+            "当前运行模式不支持开启房间温控面板",
+        )
         self.assertIsNone(policy.room_thermostat_block_reason("ON", "cool"))
 
     def test_climate_and_command_layers_share_the_policy(self) -> None:
