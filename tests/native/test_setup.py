@@ -57,11 +57,17 @@ async def _wait_for(predicate, *, timeout: float = 1) -> None:
 
 
 def _integration_tasks() -> list[asyncio.Task[object]]:
+    """Return every task name the integration creates during normal operation."""
+    prefixes = (
+        f"{DOMAIN}_",
+        "linking-temp-mc7021-reader",
+        "linking-temp-connection-repair",
+    )
     return [
         task
         for task in asyncio.all_tasks()
         if task is not asyncio.current_task()
-        and task.get_name().startswith("linking-temp")
+        and task.get_name().startswith(prefixes)
         and not task.done()
     ]
 

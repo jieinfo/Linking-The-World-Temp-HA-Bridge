@@ -79,6 +79,8 @@ _LOGGER = logging.getLogger(__name__)
 REAUTH_FLOW_WATCH_INTERVAL = 1.0
 _FLOW_SOURCE_REAUTH = "reauth"
 _FLOW_SOURCE_RECONFIGURE = "reconfigure"
+SESSION_IDLE_INTERVAL = 1.0
+SESSION_ACTIVE_INTERVAL = 0.25
 
 
 @dataclass
@@ -565,7 +567,10 @@ class LinkingTempHub:
                 availability_at = now + 15
             try:
                 await asyncio.wait_for(
-                    self._stop.wait(), 0.25 if self._queued else 1
+                    self._stop.wait(),
+                    SESSION_ACTIVE_INTERVAL
+                    if self._pending or self._queued
+                    else SESSION_IDLE_INTERVAL,
                 )
             except asyncio.TimeoutError:
                 pass

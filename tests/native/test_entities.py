@@ -219,7 +219,7 @@ async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
         _thermostat_status(hub, mac_hex, current=25.2, humidity=60)
     )
     await fake_controller.async_send_status(
-        _thermostat_status(hub, mac_hex, current=24.6, humidity=58)
+        _thermostat_status(hub, mac_hex, current=29.4, humidity=70)
     )
     await _wait_for(lambda: mac_hex in hub.thermostats and hub.available)
     await hass.async_block_till_done()
@@ -245,8 +245,12 @@ async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
     assert state.attributes["max_temp"] == 28
     assert state.attributes["target_temp_step"] == 1
     assert state.state == "cool"
-    assert float(hass.states.get(temperature_entity).state) == 24.6
-    assert int(hass.states.get(humidity_entity).state) == 58
+    # Climate exposes the latest raw panel report. Automation sensors use the
+    # three-sample median so transient changes do not trigger automations.
+    assert float(state.attributes["current_temperature"]) == 29.4
+    assert int(state.attributes["current_humidity"]) == 70
+    assert float(hass.states.get(temperature_entity).state) == 25.2
+    assert int(hass.states.get(humidity_entity).state) == 60
 
     # This is an App-originated push: no HA service call is involved.
     await fake_controller.async_send_status(
@@ -266,10 +270,26 @@ async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
     assert state.state == "off"
     assert state.attributes["hvac_modes"] == ["off"]
 
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=4))
+    await _wait_for(lambda: hub.state.mode == "dehumidify")
+    await hass.async_block_till_done()
+    state = hass.states.get(climate_entity)
+    assert state.state == "off"
+    assert state.attributes["hvac_modes"] == ["off"]
+
+    with pytest.raises(HomeAssistantError, match="当前为除湿模式"):
+        await hass.services.async_call(
+            climate.DOMAIN,
+            climate.SERVICE_SET_HVAC_MODE,
+            {"entity_id": climate_entity, "hvac_mode": "heat"},
+            blocking=True,
+        )
+    assert hub.health.snapshot()["counters"]["commands_blocked"] >= 1
+
 
 @pytest.mark.usefixtures("enable_custom_integrations")
 async def test_fragmented_status_stress_and_rapid_setpoints_recover_to_latest_value(
-    hass, setup_integration, fake_controller
+    hass, setup_integration, fake_controller, monkeypatch
 ):
     """A long fragmented stream and 50 updates never desynchronize the session."""
     hub = setup_integration.hub
@@ -282,7 +302,10 @@ async def test_fragmented_status_stress_and_rapid_setpoints_recover_to_latest_va
         hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
     )
 
-    decoded_before = hub.health.snapshot()["counters"]["frames_decoded"]
+    counters_before = hub.health.snapshot()["counters"]
+    decoded_before = counters_before["frames_decoded"]
+    malformed_before = counters_before["frames_malformed"]
+    resynchronized_before = counters_before["frames_resynchronized"]
     frames = [
         YasHcpFrame(
             5,
@@ -307,8 +330,23 @@ async def test_fragmented_status_stress_and_rapid_setpoints_recover_to_latest_va
     thermostat = hub.thermostats[mac_hex]
     assert thermostat.current_temperature == 29.9
     assert thermostat.humidity == 59
-    assert thermostat.current_temperature != 100
-    assert thermostat.humidity != 100
+    counters_after_frames = hub.health.snapshot()["counters"]
+    assert counters_after_frames["frames_malformed"] == malformed_before
+    assert counters_after_frames["frames_resynchronized"] == resynchronized_before
+
+    invalid_before = counters_after_frames["invalid_measurements"]
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, current=100, humidity=100)
+    )
+    await _wait_for(
+        lambda: hub.health.snapshot()["counters"]["invalid_measurements"]
+        == invalid_before + 1
+    )
+    await hass.async_block_till_done()
+    assert thermostat.current_temperature == 29.9
+    assert thermostat.humidity == 59
+    assert float(hass.states.get(climate_entity).attributes["current_temperature"]) != 100
+    assert int(hass.states.get(climate_entity).attributes["current_humidity"]) != 100
 
     received_setpoints: list[int] = []
 
@@ -327,6 +365,10 @@ async def test_fragmented_status_stress_and_rapid_setpoints_recover_to_latest_va
             )
 
     fake_controller.on_command = acknowledge_latest_setpoint
+    hub.command_confirmation_timeout = 0.02
+    hub.command_min_interval = 0
+    monkeypatch.setattr(hub_module, "SESSION_IDLE_INTERVAL", 0.01)
+    monkeypatch.setattr(hub_module, "SESSION_ACTIVE_INTERVAL", 0.01)
     for temperature in range(16, 29):
         for _ in range(4):
             await hass.services.async_call(
@@ -339,13 +381,11 @@ async def test_fragmented_status_stress_and_rapid_setpoints_recover_to_latest_va
     assert hub._pending[target].expected == {"target_temperature": "16"}
     assert hub._queued[target].expected == {"target_temperature": "28"}
 
-    hub._pending[target].deadline = 0
-    await hub._async_expire_pending(time.monotonic())
-    await hub._async_dispatch_queued()
     await _wait_for(
         lambda: not hub._pending
         and not hub._queued
-        and hub.thermostats[mac_hex].target_temperature == 28
+        and hub.thermostats[mac_hex].target_temperature == 28,
+        timeout=1,
     )
     assert received_setpoints == [16, 28]
     # Repeating the in-flight value cancels a stale replacement rather than
@@ -358,11 +398,14 @@ async def test_fragmented_status_stress_and_rapid_setpoints_recover_to_latest_va
 
 @pytest.mark.usefixtures("enable_custom_integrations")
 async def test_thermostat_timeout_retries_once_and_accepts_the_late_ack(
-    hass, setup_integration, fake_controller
+    hass, setup_integration, fake_controller, monkeypatch
 ):
     """A dropped first setpoint is retried once and cannot poison later commands."""
     hub = setup_integration.hub
     hub.command_min_interval = 0
+    hub.command_confirmation_timeout = 0.02
+    monkeypatch.setattr(hub_module, "SESSION_IDLE_INTERVAL", 0.01)
+    monkeypatch.setattr(hub_module, "SESSION_ACTIVE_INTERVAL", 0.01)
     mac_hex = "ff00ffffffff02ff"
     await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
     await fake_controller.async_send_status(_thermostat_status(hub, mac_hex))
@@ -394,9 +437,11 @@ async def test_thermostat_timeout_retries_once_and_accepts_the_late_ack(
         blocking=True,
     )
     target = f"thermostat_{mac_hex}"
-    hub._pending[target].deadline = 0
-    await hub._async_expire_pending(time.monotonic())
-    await _wait_for(lambda: not hub._pending and hub.thermostats[mac_hex].target_temperature == 22)
+    await _wait_for(
+        lambda: not hub._pending
+        and hub.thermostats[mac_hex].target_temperature == 22,
+        timeout=1,
+    )
 
     assert attempts == 2
     counters = hub.health.snapshot()["counters"]

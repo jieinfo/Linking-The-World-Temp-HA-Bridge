@@ -50,3 +50,35 @@ tasks, stable entity identity, and deleted entry-linked Repairs.
 with the legacy add-on bridge only. It does not generate or overwrite the
 native HACS integration, so it is retained as an independent legacy-runtime
 integrity check.
+
+## Review follow-up
+
+The Task 8 review identified five test-quality gaps. They are now addressed
+without weakening any lifecycle or recovery assertion:
+
+- Timeout, retry, and coalesced-dispatch coverage now waits for the running
+  production session loop. Tests inject short `SESSION_IDLE_INTERVAL` and
+  `SESSION_ACTIVE_INTERVAL` values together with a short confirmation timeout;
+  they no longer call private expiry or dispatch methods directly.
+- The lifecycle leak detector now recognizes all actual integration task names:
+  the domain-owned runner/reauth tasks, the MC7021 reader, and Repair tasks.
+- Filter coverage distinguishes the latest raw climate reading (29.4 C / 70%)
+  from the three-sample median automation sensor reading (25.2 C / 60%).
+- The 100-frame fragmented/concatenated stream records the malformed and
+  resynchronization counters before the stream and proves neither changes. It
+  also sends a valid placeholder 100 C / 100% report and proves it increments
+  the invalid-measurement counter without reaching the climate entity.
+- Real HA coverage now publishes a controller-originated dehumidify state,
+  verifies the room climate is forced off, and confirms the HA climate service
+  rejects an attempted room-panel enable with the user-facing safety reason.
+
+The session loop also treats any pending command as active work, so its normal
+production confirmation/retry cadence is 250 ms rather than waiting up to one
+idle second for a lone pending command.
+
+### Follow-up verification
+
+- `pytest -q --cov=custom_components/linking_the_world_temp_ha --cov-report=term-missing --cov-fail-under=95`
+  - 141 passed, 1 skipped, 95.62% coverage.
+- `python -m compileall -q custom_components tests`
+- Parsed the native manifest JSON, HACS JSON, CI YAML, and ran `git diff --check`.
