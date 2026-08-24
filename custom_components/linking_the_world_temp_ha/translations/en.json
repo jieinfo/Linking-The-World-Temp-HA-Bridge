@@ -106,7 +106,8 @@
         },
         "abort": {
           "entry_not_found": "The associated config entry could not be found",
-          "entry_not_loaded": "The associated integration is not currently loaded"
+          "entry_not_loaded": "The associated integration is not currently loaded",
+          "panel_no_longer_stale": "This panel reported again or is no longer eligible for removal. No changes were made."
         }
       }
     }

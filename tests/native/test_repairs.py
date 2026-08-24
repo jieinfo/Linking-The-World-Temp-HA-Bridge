@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -72,6 +73,9 @@ async def _make_stale_hub(hass, mock_config_entry):
     now += timedelta(seconds=STALE_PANEL_SECONDS)
     monotonic[0] += STALE_PANEL_SECONDS
     await hub.panel_registry.async_note_status_stream(now)
+    await hub.panel_registry.async_set_panel_available(
+        "ff00ffffffff01ff", False
+    )
     return hub
 
 
@@ -166,6 +170,98 @@ async def test_diagnostics_do_not_export_full_panel_macs_for_stale_panel_work(
 
     assert mac_hex not in str(diagnostics)
     assert "r0100" not in str(diagnostics)
+
+
+async def test_diagnostics_export_only_safe_runtime_status_categories(
+    hass, mock_config_entry
+) -> None:
+    """Runtime text cannot leak controller or household identities to diagnostics."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    room_name = "客餐厅"
+    host_canaries = ("10.10.1.246", "house-controller.lan", "2001:db8::246")
+    hub.last_connection_error = (
+        "Could not connect to 10.10.1.246, house-controller.lan, "
+        "or [2001:db8::246]:9000"
+    )
+    hub.last_command_status = f"waiting:{room_name} 温控面板 mac={mac_hex}"
+    hub.thermostats[mac_hex] = ThermostatState(
+        mac=bytes.fromhex(mac_hex), room_id="r0100", available=False
+    )
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub, health=hub.health)
+
+    serialized = json.dumps(
+        await async_get_config_entry_diagnostics(hass, mock_config_entry),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+    for canary in (*host_canaries, mac_hex, room_name, "r0100"):
+        assert canary not in serialized
+    assert "connection_failure_kind" in serialized
+    assert "last_command_state" in serialized
+
+
+async def test_stale_panel_confirm_aborts_when_a_report_resolves_old_form(
+    hass, mock_config_entry
+) -> None:
+    """A stale Repair form cannot delete a panel that reported before submit."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    entry_id = mock_config_entry.entry_id
+    issue_id = _stale_issue_id(entry_id, mac_hex)
+    mock_config_entry.add_to_hass(hass)
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub)
+    await hub.async_sync_stale_panel_repairs()
+
+    flow = await async_create_fix_flow(
+        hass, issue_id, {"entry_id": entry_id, "mac_hex": mac_hex}
+    )
+    flow.hass = hass
+    flow.handler = DOMAIN
+    assert (await flow.async_step_confirm())["type"] == "form"
+
+    await hub.async_note_panel_report(mac_hex, "r0100", _utc("2026-09-24T00:00:00"))
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "panel_no_longer_stale"
+    assert mac_hex in hub.panel_registry.records
+    assert _issue(hass, issue_id) is None
+
+
+async def test_stale_panel_confirm_and_report_are_serialized_for_rediscovery(
+    hass, mock_config_entry
+) -> None:
+    """A report racing a confirmed cleanup waits, then recreates the panel."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    entry_id = mock_config_entry.entry_id
+    issue_id = _stale_issue_id(entry_id, mac_hex)
+    mock_config_entry.add_to_hass(hass)
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub)
+    await hub.async_sync_stale_panel_repairs()
+
+    flow = await async_create_fix_flow(
+        hass, issue_id, {"entry_id": entry_id, "mac_hex": mac_hex}
+    )
+    flow.hass = hass
+    flow.handler = DOMAIN
+
+    async with hub._panel_lifecycle_lock:
+        confirm_task = asyncio.create_task(flow.async_step_confirm({}))
+        await asyncio.sleep(0)
+        report_task = asyncio.create_task(
+            hub.async_note_panel_report(mac_hex, "r0100", _utc("2026-09-24T00:00:00"))
+        )
+        await asyncio.sleep(0)
+        assert not confirm_task.done()
+        assert not report_task.done()
+
+    assert (await confirm_task)["type"] == "create_entry"
+    assert await report_task
+    assert mac_hex in hub.panel_registry.records
+    assert _issue(hass, issue_id) is None
 
 
 async def test_stale_panel_repair_confirm_removes_only_owned_records_then_rediscovery(

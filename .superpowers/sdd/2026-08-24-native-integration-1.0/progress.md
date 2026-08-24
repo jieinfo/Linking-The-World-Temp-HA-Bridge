@@ -118,7 +118,22 @@
 - Verification: 10 focused Task 5 tests and 100 complete native tests passed.
 - Scoped re-review: PASS; monotonic duration, status continuity, whole-body TLV validation, and availability persistence are closed.
 - Task 5: complete.
-- Task 6: complete.
+
+## Task 6 review
+
+- Implementer: `01a03326-3de7-7f52-a6fc-27e35589cfbf`.
+- Commit: `3412d31 feat: add manual stale panel cleanup`.
+- Accepted P1: an already-open stale-panel confirmation flow can delete a panel that reported again and whose issue was cleared; confirmation must atomically revalidate staleness against concurrent reports.
+- Accepted P1: diagnostics exports raw `last_connection_error` and `last_command_status`, allowing controller host, room identity, or full panel MAC to escape entry-data redaction.
+- Fix round 1 dispatched with stale-flow/report race and diagnostic canary tests.
+- Fix round 1 implemented locally: stale confirmation now revalidates and
+  removes under the shared hub panel-lifecycle lock; reports and stale-Repair
+  creation use that same lock. Diagnostics exports only failure/command
+  categories, with serialized IPv4/DNS/IPv6/MAC/room-name canary coverage.
+- Verification: 49 focused connection/health/Repair tests and 111 complete
+  native tests passed; compileall, translation JSON validation, and diff check
+  passed.
+- Task 6 review fix round 1: complete; scoped re-review remains pending.
   - Added exact 30-day stale-panel Repairs with explicit confirmation and
     report-driven automatic recovery.
   - Safe cleanup selects only this config entry's stable panel entity prefix,

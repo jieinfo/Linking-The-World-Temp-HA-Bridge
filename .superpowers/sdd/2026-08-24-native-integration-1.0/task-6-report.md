@@ -51,3 +51,26 @@
 - `.venv-313/bin/python -m compileall -q custom_components/linking_the_world_temp_ha`: passed.
 - JSON validation for strings and both translations: passed.
 - `git diff --check`: clean.
+
+## Review Fix Round 1
+
+- Added one hub-owned panel lifecycle lock shared by valid panel reports,
+  stale-Repair creation, and confirmed stale-panel removal. The confirmation
+  path now atomically revalidates that the record still exists, remains
+  unavailable, has at least 30 days of observed absence, and still owns the
+  matching Repair before any entity/device cleanup starts.
+- A report that wins first clears the Repair and makes the old confirmation
+  abort with `panel_no_longer_stale`; a confirmation that wins first removes
+  the record while holding the same lock, so a waiting report is handled as a
+  normal rediscovery after deletion.
+- Diagnostics no longer exports raw `last_connection_error` or
+  `last_command_status`. It exposes `connection_failure_kind` and a command
+  state prefix only, while the existing anonymized panel map and sanitized
+  health snapshot remain available for troubleshooting.
+- Added canary coverage for IPv4, DNS, IPv6, full panel MAC, room ID, and a
+  Chinese room name across the serialized diagnostics payload, plus ordered
+  report/confirmation and controlled concurrent deletion/rediscovery tests.
+- Verification: `tests/native/test_connection_failures.py`,
+  `tests/native/test_health_runtime.py`, and `tests/native/test_repairs.py`
+  passed (`49 passed`); all native tests passed (`111 passed`); `compileall`,
+  translation JSON validation, and `git diff --check` passed.

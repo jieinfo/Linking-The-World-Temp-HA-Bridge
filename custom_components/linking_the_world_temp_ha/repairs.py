@@ -163,45 +163,60 @@ class StalePanelRepairFlow(RepairsFlow):
         runtime = entry.runtime_data
         if runtime is None:
             return self.async_abort(reason="entry_not_loaded")
-        await _async_remove_stale_panel(self.hass, entry, self.mac_hex)
+        removed = await _async_remove_stale_panel(
+            self.hass, entry, self.mac_hex, self._issue_id
+        )
+        if not removed:
+            return self.async_abort(reason="panel_no_longer_stale")
         ir.async_delete_issue(self.hass, DOMAIN, self._issue_id)
         return self.async_create_entry(data={})
 
 
 async def _async_remove_stale_panel(
-    hass: HomeAssistant, entry: ConfigEntry, mac_hex: str
-) -> None:
+    hass: HomeAssistant, entry: ConfigEntry, mac_hex: str, issue_id: str
+) -> bool:
     """Remove owned registry records before deleting the source panel record.
 
     The persistent record is intentionally last: registry failures leave enough
     source state for the user to retry the same Repair safely.
     """
-    unique_id_prefix = f"{entry.entry_id}_thermostat_{mac_hex}_"
-    panel_identifier = (DOMAIN, f"{entry.entry_id}_{mac_hex}")
-    entity_registry = er.async_get(hass)
-    device_registry = dr.async_get(hass)
-    owned_entities = [
-        entity
-        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
-        if entity.unique_id.startswith(unique_id_prefix)
-    ]
-    for entity in owned_entities:
-        entity_registry.async_remove(entity.entity_id)
+    async def cleanup_owned_records() -> None:
+        unique_id_prefix = f"{entry.entry_id}_thermostat_{mac_hex}_"
+        panel_identifier = (DOMAIN, f"{entry.entry_id}_{mac_hex}")
+        entity_registry = er.async_get(hass)
+        device_registry = dr.async_get(hass)
+        owned_entities = [
+            entity
+            for entity in er.async_entries_for_config_entry(
+                entity_registry, entry.entry_id
+            )
+            if entity.unique_id.startswith(unique_id_prefix)
+        ]
+        for entity in owned_entities:
+            entity_registry.async_remove(entity.entity_id)
 
-    device = device_registry.async_get_device(identifiers={panel_identifier})
-    if device is not None:
-        remaining_entities = er.async_entries_for_device(
-            entity_registry, device.id, include_disabled_entities=True
-        )
-        unrelated_entries = set(device.config_entries) - {entry.entry_id}
-        if not remaining_entities and not unrelated_entries:
-            device_registry.async_remove_device(device.id)
+        device = device_registry.async_get_device(identifiers={panel_identifier})
+        if device is not None:
+            remaining_entities = er.async_entries_for_device(
+                entity_registry, device.id, include_disabled_entities=True
+            )
+            unrelated_entries = set(device.config_entries) - {entry.entry_id}
+            if not remaining_entities and not unrelated_entries:
+                device_registry.async_remove_device(device.id)
 
-    await entry.runtime_data.hub.async_forget_panel(mac_hex)
-    if entry.state is ConfigEntryState.LOADED:
+    def issue_is_current() -> bool:
+        return ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+    removed = await entry.runtime_data.hub.async_remove_stale_panel_if_current(
+        mac_hex,
+        issue_is_current=issue_is_current,
+        cleanup_owned_records=cleanup_owned_records,
+    )
+    if removed and entry.state is ConfigEntryState.LOADED:
         # Dynamic entity platforms keep their in-memory entity set. Reloading
         # disposes that set so a future report can recreate the same identities.
         hass.config_entries.async_schedule_reload(entry.entry_id)
+    return removed
 
 
 async def async_create_fix_flow(

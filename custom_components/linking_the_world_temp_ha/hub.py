@@ -7,7 +7,7 @@ import logging
 import statistics
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -69,7 +69,7 @@ from .protocol import (
     preserve_valid_thermostat_measurements,
 )
 from .health import HealthTracker
-from .panel_registry import PanelRegistry
+from .panel_registry import STALE_PANEL_SECONDS, PanelRegistry
 from .runtime import ConnectionStage, FailureKind
 from .repairs import RepairManager
 from .thermostat_policy import room_thermostat_block_reason
@@ -151,6 +151,10 @@ class LinkingTempHub:
         self._runner: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._command_lock = asyncio.Lock()
+        # Panel reports and Repair-driven deletion share this lock. A report
+        # either invalidates an open Repair before its confirmation is checked,
+        # or arrives after deletion and is treated as a fresh discovery.
+        self._panel_lifecycle_lock = asyncio.Lock()
         self._last_command_at: float | None = None
         self._pending: dict[str, PendingCommand] = {}
         self._queued: dict[str, QueuedCommand] = {}
@@ -915,12 +919,13 @@ class LinkingTempHub:
 
     async def async_sync_stale_panel_repairs(self) -> None:
         """Expose each observed-thirty-day absence as one actionable Repair."""
-        for mac_hex in self.panel_registry.stale_macs:
-            record = self.panel_registry.records.get(mac_hex)
-            if record is not None:
-                await self.repairs.async_set_stale_panel(
-                    record, self.panel_registry.room_names.get(record.room_id)
-                )
+        async with self._panel_lifecycle_lock:
+            for mac_hex in self.panel_registry.stale_macs:
+                record = self.panel_registry.records.get(mac_hex)
+                if record is not None:
+                    await self.repairs.async_set_stale_panel(
+                        record, self.panel_registry.room_names.get(record.room_id)
+                    )
 
     async def async_note_panel_report(
         self,
@@ -931,14 +936,47 @@ class LinkingTempHub:
         now_monotonic: float | None = None,
     ) -> bool:
         """Record a panel report and resolve its stale Repair, if any."""
-        is_new = await self.panel_registry.async_note_panel_report(
-            mac_hex, room_id, now_utc, now_monotonic=now_monotonic
-        )
-        await self.repairs.async_clear_stale_panel(mac_hex)
-        return is_new
+        async with self._panel_lifecycle_lock:
+            is_new = await self.panel_registry.async_note_panel_report(
+                mac_hex, room_id, now_utc, now_monotonic=now_monotonic
+            )
+            await self.repairs.async_clear_stale_panel(mac_hex)
+            return is_new
 
     async def async_forget_panel(self, mac_hex: str) -> None:
         """Remove a user-deleted panel from runtime state after registry cleanup."""
+        async with self._panel_lifecycle_lock:
+            await self._async_forget_panel_locked(mac_hex)
+
+    async def async_remove_stale_panel_if_current(
+        self,
+        mac_hex: str,
+        *,
+        issue_is_current: Callable[[], bool],
+        cleanup_owned_records: Callable[[], Awaitable[None]],
+    ) -> bool:
+        """Atomically revalidate and remove one stale panel.
+
+        The caller supplies the Home Assistant registry cleanup so the source
+        record stays intact if registry removal raises. Keeping it inside the
+        lifecycle lock makes a concurrent report deterministically either
+        invalidate this Repair or rediscover the panel after removal.
+        """
+        async with self._panel_lifecycle_lock:
+            record = self.panel_registry.records.get(mac_hex)
+            if (
+                record is None
+                or record.available
+                or record.monitored_absence_seconds < STALE_PANEL_SECONDS
+                or not issue_is_current()
+            ):
+                return False
+            await cleanup_owned_records()
+            await self._async_forget_panel_locked(mac_hex)
+            return True
+
+    async def _async_forget_panel_locked(self, mac_hex: str) -> None:
+        """Forget one panel while the panel lifecycle lock is held."""
         await self.panel_registry.async_delete_panel(mac_hex)
         self.thermostats.pop(mac_hex, None)
         self.filtered.pop(mac_hex, None)

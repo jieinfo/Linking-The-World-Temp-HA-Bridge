@@ -106,7 +106,8 @@
         },
         "abort": {
           "entry_not_found": "找不到关联的配置项",
-          "entry_not_loaded": "关联的集成当前未加载"
+          "entry_not_loaded": "关联的集成当前未加载",
+          "panel_no_longer_stale": "该面板已重新上报或不再符合删除条件，未作任何修改"
         }
       }
     }

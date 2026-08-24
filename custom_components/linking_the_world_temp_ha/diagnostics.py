@@ -54,8 +54,11 @@ async def async_get_config_entry_diagnostics(
             "connected": hub.connected,
             "protocol_verified": hub.protocol_verified,
             "protocol_status": hub.protocol_status,
-            "last_connection_error": hub.last_connection_error,
-            "last_command_status": hub.last_command_status,
+            # Runtime strings can contain transport endpoints, room labels, or
+            # panel identities. Diagnostics intentionally exports categories
+            # only; detail belongs in local logs.
+            "connection_failure_kind": runtime.health.failure_kind.value,
+            "last_command_state": _command_state(hub.last_command_status),
             "control_permission": hub.control_permission,
             "system_state": vars(hub.state),
             "thermostat_count": len(hub.thermostats),
@@ -63,3 +66,11 @@ async def async_get_config_entry_diagnostics(
             "health": runtime.health.snapshot(),
         },
     }
+
+
+def _command_state(status: object) -> str:
+    """Reduce a command status to its stable state prefix for diagnostics."""
+    if not isinstance(status, str):
+        return "unknown"
+    state = status.partition(":")[0]
+    return state if state else "unknown"
