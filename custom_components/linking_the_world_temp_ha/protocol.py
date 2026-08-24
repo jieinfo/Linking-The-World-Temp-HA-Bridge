@@ -17,6 +17,9 @@ MAGIC = b"dooyashcp"
 VERSION = 1
 TRAILER = b"#"
 MAX_PAYLOAD_LENGTH = 16_384
+CONNECT_TIMEOUT = 8
+HELLO_TIMEOUT = 8
+LOGIN_TIMEOUT = 8
 TECH_SYSTEM_MAC = bytes.fromhex("ff00ffffffff00ff")
 
 CLIENT_PUBLIC_KEY = b"""-----BEGIN PUBLIC KEY-----
@@ -41,8 +44,32 @@ class ProtocolError(Exception):
     """Base protocol error."""
 
 
-class CannotConnect(ProtocolError):
-    """The controller cannot be reached or did not complete the handshake."""
+class MoorgenConnectionError(Exception):
+    """The controller connection could not complete."""
+
+
+class TcpConnectError(MoorgenConnectionError):
+    """The TCP socket could not be opened."""
+
+
+class HandshakeTimeout(MoorgenConnectionError):
+    """The controller did not complete the hello exchange."""
+
+
+class LoginTimeout(MoorgenConnectionError):
+    """The controller did not complete the login exchange."""
+
+
+class AuthenticationRejected(MoorgenConnectionError):
+    """The controller explicitly rejected the supplied credentials."""
+
+
+class IncompatibleProtocol(MoorgenConnectionError):
+    """The controller sent a response this client does not understand."""
+
+
+# Retain the historical catch-all name while callers move to typed failures.
+CannotConnect = MoorgenConnectionError
 
 
 @dataclass(frozen=True)
@@ -281,6 +308,7 @@ class AsyncMoorgenClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._reader_stopped = asyncio.Event()
         self._decoder = YasHcpDecoder()
         self._inbox: asyncio.Queue[YasHcpFrame] = asyncio.Queue()
         self._write_lock = asyncio.Lock()
@@ -299,23 +327,64 @@ class AsyncMoorgenClient:
 
     async def connect(self) -> None:
         try:
+            await self._async_open_socket()
+            await self._async_complete_hello()
+            await self._async_complete_login()
+            await self._send_initial_queries()
+            self._ready = True
+        except MoorgenConnectionError:
+            await self.close()
+            raise
+        except (OSError, ConnectionError) as error:
+            await self.close()
+            raise IncompatibleProtocol(
+                "MC7021 disconnected while starting the authenticated session"
+            ) from error
+
+    async def _async_open_socket(self) -> None:
+        try:
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port), timeout=8
+                asyncio.open_connection(self.host, self.port), timeout=CONNECT_TIMEOUT
             )
             self.last_received_at = time.monotonic()
             self.reader_error = None
+            self._reader_stopped.clear()
             self._reader_task = asyncio.create_task(
                 self._read_loop(), name="linking-temp-mc7021-reader"
             )
+        except (OSError, TimeoutError, asyncio.TimeoutError) as error:
+            raise TcpConnectError(
+                f"Could not connect to MC7021 at {self.host}:{self.port}"
+            ) from error
+
+    async def _async_complete_hello(self) -> None:
+        try:
             await self._send_hello()
-            await self._wait_for(1, 3, 8)
-            await self._send_login()
-            await self._wait_for(2, 6, 8)
-            await self._send_initial_queries()
-            self._ready = True
+            await self._wait_for(1, 3, HELLO_TIMEOUT)
+        except IncompatibleProtocol:
+            raise
         except (OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as error:
-            await self.close()
-            raise CannotConnect(str(error)) from error
+            raise HandshakeTimeout(
+                "MC7021 did not complete the hello exchange"
+            ) from error
+
+    async def _async_complete_login(self) -> None:
+        try:
+            await self._send_login()
+            reply = await self._wait_for_opcodes(2, {5, 6}, LOGIN_TIMEOUT)
+        except IncompatibleProtocol:
+            raise
+        except (OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as error:
+            raise LoginTimeout("MC7021 did not complete the login exchange") from error
+
+        if reply.opcode == 6:
+            return
+        if any(
+            tag == 0x031C and value == b"\x01"
+            for tag, value in iter_tlvs(reply.body)
+        ):
+            raise AuthenticationRejected("MC7021 rejected the supplied credentials")
+        raise IncompatibleProtocol("MC7021 sent an unknown login rejection response")
 
     async def close(self) -> None:
         self._ready = False
@@ -407,6 +476,11 @@ class AsyncMoorgenClient:
             )
 
     async def _wait_for(self, kind: int, opcode: int, timeout: float) -> YasHcpFrame:
+        return await self._wait_for_opcodes(kind, {opcode}, timeout)
+
+    async def _wait_for_opcodes(
+        self, kind: int, opcodes: set[int], timeout: float
+    ) -> YasHcpFrame:
         deferred: list[YasHcpFrame] = []
         deadline = asyncio.get_running_loop().time() + timeout
         try:
@@ -414,16 +488,36 @@ class AsyncMoorgenClient:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     raise TimeoutError(
-                        f"MC7021 did not return kind={kind:#x}, opcode={opcode:#x}"
+                        f"MC7021 did not return kind={kind:#x}, opcode={opcodes}"
                     )
-                try:
-                    frame = await asyncio.wait_for(self._inbox.get(), remaining)
-                except asyncio.TimeoutError as error:
+                inbox_get = asyncio.create_task(self._inbox.get())
+                reader_stopped = asyncio.create_task(self._reader_stopped.wait())
+                done, pending = await asyncio.wait(
+                    {inbox_get, reader_stopped},
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if inbox_get in done:
+                    frame = inbox_get.result()
+                elif reader_stopped in done:
+                    if self.reader_error is not None:
+                        raise self.reader_error
+                    raise ConnectionError("MC7021 closed the TCP stream")
+                else:
                     raise TimeoutError(
-                        f"MC7021 did not return kind={kind:#x}, opcode={opcode:#x}"
-                    ) from error
-                if frame.kind == kind and frame.opcode == opcode:
-                    return frame
+                        f"MC7021 did not return kind={kind:#x}, opcode={opcodes}"
+                    )
+                if frame.kind == kind:
+                    if frame.opcode in opcodes:
+                        return frame
+                    raise IncompatibleProtocol(
+                        "MC7021 returned an unexpected response "
+                        f"kind={frame.kind:#x}, opcode={frame.opcode:#x}"
+                    )
                 deferred.append(frame)
         finally:
             for frame in deferred:
@@ -462,3 +556,4 @@ class AsyncMoorgenClient:
             self.reader_error = error
         finally:
             self._ready = False
+            self._reader_stopped.set()
