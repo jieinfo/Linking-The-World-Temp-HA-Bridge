@@ -7,7 +7,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
 from .entity import LinkingTempEntity
 from .hub import LinkingTempHub
 
@@ -57,5 +56,5 @@ class WinterHumidifierSwitch(LinkingTempEntity, SwitchEntity):
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    hub: LinkingTempHub = hass.data[DOMAIN][entry.entry_id]
+    hub: LinkingTempHub = entry.runtime_data.hub
     async_add_entities([SystemPowerSwitch(hub), WinterHumidifierSwitch(hub)])

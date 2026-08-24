@@ -16,7 +16,6 @@ from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
 from .entity import LinkingTempEntity, LinkingThermostatEntity
 from .hub import LinkingTempHub
 
@@ -97,7 +96,7 @@ class AutomationHumiditySensor(LinkingThermostatEntity, SensorEntity):
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    hub: LinkingTempHub = hass.data[DOMAIN][entry.entry_id]
+    hub: LinkingTempHub = entry.runtime_data.hub
     async_add_entities(
         [DiagnosticSensor(hub, description) for description in DIAGNOSTICS]
     )

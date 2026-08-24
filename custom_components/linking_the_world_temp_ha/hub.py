@@ -51,8 +51,14 @@ from .protocol import (
     COMMAND_SCENE,
     COMMAND_WINTER_HUMIDIFIER,
     AsyncMoorgenClient,
+    AuthenticationRejected,
     CannotConnect,
+    HandshakeTimeout,
+    IncompatibleProtocol,
+    LoginTimeout,
+    MoorgenConnectionError,
     TechSystemState,
+    TcpConnectError,
     ThermostatState,
     YasHcpFrame,
     decode_tech_system_status,
@@ -62,6 +68,8 @@ from .protocol import (
     parse_device_mac,
     preserve_valid_thermostat_measurements,
 )
+from .health import HealthTracker
+from .runtime import ConnectionStage, FailureKind
 from .thermostat_policy import room_thermostat_block_reason
 
 _LOGGER = logging.getLogger(__name__)
@@ -80,7 +88,9 @@ class FilteredMeasurements:
 class LinkingTempHub:
     """Own the controller session and expose push state to HA entities."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, health: HealthTracker
+    ) -> None:
         self.hass = hass
         self.entry = entry
         self.host = entry.data["host"]
@@ -117,6 +127,7 @@ class LinkingTempHub:
         self.thermostats: dict[str, ThermostatState] = {}
         self.room_names: dict[str, str] = {}
         self.filtered: dict[str, FilteredMeasurements] = {}
+        self.health = health
         self.connected = False
         self.protocol_verified = False
         self.protocol_status = "waiting"
@@ -134,6 +145,7 @@ class LinkingTempHub:
         self._store: Store[dict[str, Any]] = Store(
             hass, 1, f"{DOMAIN}.{entry.entry_id}.panels"
         )
+        self._has_attempted_connection = False
 
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
@@ -173,13 +185,21 @@ class LinkingTempHub:
 
     @property
     def available(self) -> bool:
-        return self.connected and self.protocol_verified
+        stage = getattr(getattr(self, "health", None), "stage", None)
+        return (
+            (stage is None or stage is ConnectionStage.READY)
+            and self.connected
+            and self.protocol_verified
+        )
 
     @property
     def control_permission(self) -> str:
         if not self.allow_control:
             return "read_only"
-        if not self.connected:
+        if (
+            getattr(getattr(self, "health", None), "stage", None)
+            is ConnectionStage.DISCONNECTED
+        ):
             return "disconnected"
         if not self.protocol_verified:
             return "waiting_for_protocol"
@@ -288,6 +308,11 @@ class LinkingTempHub:
         retry_delay = 5
         while not self._stop.is_set():
             try:
+                self.health.increment("connection_attempts")
+                if self._has_attempted_connection:
+                    self.health.increment("reconnects")
+                self._has_attempted_connection = True
+                self._mark_stage(ConnectionStage.CONNECTING)
                 self.last_connection_error = "connecting"
                 self._notify()
                 client = AsyncMoorgenClient(
@@ -299,9 +324,13 @@ class LinkingTempHub:
                 )
                 client.on_frame = self._async_frame_received
                 client.on_status = self._async_status_received
+                client.on_stage = self._async_protocol_stage_received
+                client.on_parser_event = self._async_parser_event
                 self._client = client
                 await client.connect()
                 self.connected = True
+                self.health.increment("connection_successes")
+                self.health.clear_failure()
                 self.last_connection_error = "none"
                 retry_delay = 5
                 self._notify()
@@ -312,6 +341,7 @@ class LinkingTempHub:
             except asyncio.CancelledError:
                 raise
             except (CannotConnect, ConnectionError, OSError, TimeoutError) as error:
+                self._record_connection_failure(error)
                 self.last_connection_error = str(error) or error.__class__.__name__
                 _LOGGER.warning(
                     "MC7021 session unavailable: %s; retrying in %ss",
@@ -325,6 +355,57 @@ class LinkingTempHub:
             except asyncio.TimeoutError:
                 pass
             retry_delay = min(30, retry_delay * 2)
+
+    async def _async_protocol_stage_received(self, stage: str) -> None:
+        """Reflect protocol lifecycle callbacks in the shared health runtime."""
+        connection_stage = ConnectionStage(stage)
+        if connection_stage is ConnectionStage.AUTHENTICATING:
+            self.health.increment("handshake_successes")
+        elif connection_stage is ConnectionStage.READY:
+            self.connected = True
+            self.health.increment("login_successes")
+        self._mark_stage(connection_stage)
+        self._notify()
+
+    async def _async_parser_event(self, name: str, count: int) -> None:
+        """Record decoder counters only; raw protocol data stays in the client."""
+        self.health.increment(name, count)
+
+    def _increment_health(self, name: str, count: int = 1) -> None:
+        """Keep focused compatibility tests independent from runtime construction."""
+        if health := getattr(self, "health", None):
+            health.increment(name, count)
+
+    def _mark_stage(self, stage: ConnectionStage) -> None:
+        """Update the lifecycle before entities are notified of a disconnect."""
+        if self.health.stage is stage:
+            return
+        self.health.mark_stage(stage)
+        if stage is ConnectionStage.DISCONNECTED:
+            self.connected = False
+
+    def _record_connection_failure(self, error: BaseException) -> None:
+        """Map typed connection failures to stable, user-safe health categories."""
+        kind = FailureKind.TCP_TIMEOUT
+        if isinstance(error, TcpConnectError):
+            if isinstance(error.__cause__, ConnectionRefusedError):
+                kind = FailureKind.TCP_REFUSED
+            else:
+                kind = FailureKind.TCP_TIMEOUT
+        elif isinstance(error, HandshakeTimeout):
+            kind = FailureKind.HANDSHAKE
+            self.health.increment("handshake_failures")
+        elif isinstance(error, LoginTimeout):
+            kind = FailureKind.LOGIN_TIMEOUT
+            self.health.increment("login_failures")
+        elif isinstance(error, AuthenticationRejected):
+            kind = FailureKind.AUTH_REJECTED
+            self.health.increment("login_failures")
+        elif isinstance(error, IncompatibleProtocol):
+            kind = FailureKind.PROTOCOL
+        elif "silent" in str(error).lower():
+            kind = FailureKind.STATUS_SILENCE
+        self.health.record_failure(kind, error)
 
     async def _async_session_loop(self, client: AsyncMoorgenClient) -> None:
         heartbeat_at = 0.0
@@ -354,9 +435,12 @@ class LinkingTempHub:
     async def _async_disconnect(self) -> None:
         client = self._client
         self._client = None
-        self.connected = False
+        was_connected = client is not None or self.connected
+        self._mark_stage(ConnectionStage.DISCONNECTED)
         self.protocol_verified = False
         self.protocol_status = "disconnected"
+        if was_connected:
+            self.health.increment("disconnects")
         for thermostat in self.thermostats.values():
             thermostat.available = False
         self.filtered.clear()
@@ -379,17 +463,21 @@ class LinkingTempHub:
         send_guard: Callable[[], str | None] | None = None,
     ) -> None:
         if not self.allow_control:
+            self.health.increment("commands_blocked")
             raise HomeAssistantError("集成当前处于只读模式")
         if not self.available or self._client is None:
+            self.health.increment("commands_blocked")
             raise HomeAssistantError("主机尚未连接或协议状态尚未验证")
 
         def validate_send_guard() -> None:
             if send_guard is not None and (reason := send_guard()):
+                self._increment_health("commands_blocked")
                 raise HomeAssistantError(reason)
 
         async with self._command_lock:
             if target in self._pending:
                 if not coalesce:
+                    self.health.increment("commands_blocked")
                     raise HomeAssistantError(
                         f"仍在等待主机确认: {self._pending[target].label}"
                     )
@@ -406,6 +494,7 @@ class LinkingTempHub:
                 else:
                     self._queued[target] = queued
                     self.last_command_status = f"queued:{label}"
+                    self.health.increment("commands_coalesced")
                 self._notify()
                 return
             now = time.monotonic()
@@ -443,6 +532,7 @@ class LinkingTempHub:
                         value,
                         before_write=validate_send_guard,
                     )
+                self.health.increment("commands_sent")
                 self._last_command_at = time.monotonic()
                 await self._client.request_status()
             except Exception:
@@ -496,6 +586,8 @@ class LinkingTempHub:
             return
         self._pending.pop(target, None)
         self.last_command_status = f"confirmed:{pending.label}"
+        self.health.increment("commands_confirmed")
+        self.health.record_confirmation_latency(time.monotonic() - pending.sent_at)
 
     async def _async_expire_pending(self, now: float) -> None:
         """Advance queued commands, retry setpoints once, or report final failure."""
@@ -511,6 +603,7 @@ class LinkingTempHub:
                     continue
                 if target in self._queued:
                     self._pending.pop(target, None)
+                    self.health.increment("commands_timed_out")
                     self.last_command_status = f"timeout_continuing:{pending.label}"
                     _LOGGER.warning(
                         "Command confirmation timed out; continuing latest queued "
@@ -521,9 +614,11 @@ class LinkingTempHub:
                         now - pending.sent_at,
                     )
                 elif temperature_retry_is_allowed(pending):
+                    self.health.increment("commands_timed_out")
                     await self._async_retry_temperature_command(pending)
                 else:
                     self._pending.pop(target, None)
+                    self.health.increment("commands_timed_out")
                     self.last_command_status = f"timeout:{pending.label}"
                     _LOGGER.error(
                         "MC7021 command confirmation timed out: label=%s target=%s "
@@ -553,6 +648,7 @@ class LinkingTempHub:
             return
         retry_at = time.monotonic()
         pending.attempts += 1
+        self.health.increment("commands_retried")
         pending.deadline = retry_at + self.command_confirmation_timeout
         pending.next_status_poll_at = retry_at + min(
             STATUS_POLL_INTERVAL,
@@ -569,6 +665,7 @@ class LinkingTempHub:
         )
         try:
             await client.send_command(pending.mac, pending.command, pending.value)
+            self.health.increment("commands_sent")
             self._last_command_at = time.monotonic()
             await client.request_status()
         except Exception:
@@ -624,6 +721,7 @@ class LinkingTempHub:
                 thermostat, previous
             )
             if not measurements_valid:
+                self.health.increment("invalid_measurements")
                 _LOGGER.debug(
                     "Ignored implausible thermostat measurements: mac=%s "
                     "temperature=%s humidity=%s",
@@ -644,6 +742,8 @@ class LinkingTempHub:
             changed = True
             if is_new:
                 await self._async_save_panels()
+        if not total and thermostat is None:
+            self.health.increment("ignored_statuses")
         if total or changed:
             self._notify()
 

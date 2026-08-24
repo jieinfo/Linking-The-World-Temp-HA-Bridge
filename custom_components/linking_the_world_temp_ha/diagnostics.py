@@ -9,7 +9,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
 from .hub import LinkingTempHub
 
 TO_REDACT = {CONF_PASSWORD}
@@ -18,7 +17,8 @@ TO_REDACT = {CONF_PASSWORD}
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
-    hub: LinkingTempHub = hass.data[DOMAIN][entry.entry_id]
+    runtime = entry.runtime_data
+    hub: LinkingTempHub = runtime.hub
     return {
         "entry": async_redact_data(dict(entry.data), TO_REDACT),
         "options": dict(entry.options),
@@ -42,5 +42,6 @@ async def async_get_config_entry_diagnostics(
                 }
                 for mac, state in hub.thermostats.items()
             },
+            "health": runtime.health.snapshot(),
         },
     }

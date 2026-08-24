@@ -93,6 +93,10 @@ class YasHcpDecoder:
 
     def __init__(self) -> None:
         self._buffer = bytearray()
+        self.frames_decoded = 0
+        self.frames_malformed = 0
+        self.frames_resynchronized = 0
+        self.bytes_discarded = 0
 
     def feed(self, data: bytes) -> list[YasHcpFrame]:
         self._buffer.extend(data)
@@ -100,15 +104,22 @@ class YasHcpDecoder:
         while True:
             start = self._buffer.find(b"#")
             if start < 0:
+                self.bytes_discarded += len(self._buffer)
+                if self._buffer:
+                    self.frames_resynchronized += 1
                 self._buffer.clear()
                 return output
             if start:
+                self.bytes_discarded += start
+                self.frames_resynchronized += 1
                 del self._buffer[:start]
             if len(self._buffer) < 3:
                 return output
             prefix_length = min(len(MAGIC), len(self._buffer) - 3)
             if bytes(self._buffer[3 : 3 + prefix_length]) != MAGIC[:prefix_length]:
                 del self._buffer[0]
+                self.bytes_discarded += 1
+                self.frames_resynchronized += 1
                 continue
             if prefix_length < len(MAGIC):
                 return output
@@ -118,6 +129,9 @@ class YasHcpDecoder:
                     "Discarded YAS HCP frame with excessive length: %d", payload_length
                 )
                 del self._buffer[0]
+                self.frames_malformed += 1
+                self.bytes_discarded += 1
+                self.frames_resynchronized += 1
                 continue
             frame_length = 3 + payload_length
             if len(self._buffer) < frame_length:
@@ -132,6 +146,7 @@ class YasHcpDecoder:
                 _LOGGER.warning(
                     "Discarded malformed YAS HCP payload (%d bytes)", len(raw)
                 )
+                self.frames_malformed += 1
                 continue
             body_length = struct.unpack_from("<H", raw, len(MAGIC) + 5)[0]
             expected_length = len(MAGIC) + 7 + body_length + len(TRAILER)
@@ -139,6 +154,7 @@ class YasHcpDecoder:
                 _LOGGER.warning(
                     "Discarded YAS HCP payload with invalid length (%d bytes)", len(raw)
                 )
+                self.frames_malformed += 1
                 continue
             output.append(
                 YasHcpFrame(
@@ -148,6 +164,7 @@ class YasHcpDecoder:
                     body=raw[len(MAGIC) + 7 : len(MAGIC) + 7 + body_length],
                 )
             )
+            self.frames_decoded += 1
 
 
 @dataclass
@@ -281,6 +298,8 @@ def decode_thermostat_status(
 
 FrameCallback = Callable[[YasHcpFrame], Awaitable[None] | None]
 StatusCallback = Callable[[bytes], Awaitable[None] | None]
+StageCallback = Callable[[str], Awaitable[None] | None]
+ParserEventCallback = Callable[[str, int], Awaitable[None] | None]
 
 
 class AsyncMoorgenClient:
@@ -305,6 +324,8 @@ class AsyncMoorgenClient:
         self.client_id = client_id.lower()
         self.on_frame: FrameCallback | None = None
         self.on_status: StatusCallback | None = None
+        self.on_stage: StageCallback | None = None
+        self.on_parser_event: ParserEventCallback | None = None
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -326,11 +347,15 @@ class AsyncMoorgenClient:
 
     async def connect(self) -> None:
         try:
+            await self._emit_stage("connecting")
             await self._async_open_socket()
+            await self._emit_stage("handshaking")
             await self._async_complete_hello()
+            await self._emit_stage("authenticating")
             await self._async_complete_login()
             await self._send_initial_queries()
             self._ready = True
+            await self._emit_stage("ready")
         except MoorgenConnectionError:
             await self.close()
             raise
@@ -450,6 +475,36 @@ class AsyncMoorgenClient:
         body += bytes.fromhex("13021000") + self.client_id.encode("ascii")
         await self._send(1, 1, body)
 
+    async def _emit_stage(self, stage: str) -> None:
+        """Forward lifecycle boundaries without exposing protocol payloads."""
+        if self.on_stage is None:
+            return
+        result = self.on_stage(stage)
+        if result is not None:
+            await result
+
+    async def _emit_parser_changes(
+        self, before: tuple[int, int, int, int]
+    ) -> None:
+        """Report parser counters only, never the bytes that produced them."""
+        if self.on_parser_event is None:
+            return
+        after = (
+            self._decoder.frames_decoded,
+            self._decoder.frames_malformed,
+            self._decoder.frames_resynchronized,
+            self._decoder.bytes_discarded,
+        )
+        for name, change in zip(
+            ("frames_decoded", "frames_malformed", "frames_resynchronized", "bytes_discarded"),
+            (current - previous for current, previous in zip(after, before)),
+            strict=True,
+        ):
+            if change > 0:
+                result = self.on_parser_event(name, change)
+                if result is not None:
+                    await result
+
     async def _send_login(self) -> None:
         await self._send(
             2,
@@ -528,7 +583,14 @@ class AsyncMoorgenClient:
         try:
             while data := await self._reader.read(4096):
                 self.last_received_at = time.monotonic()
+                before = (
+                    self._decoder.frames_decoded,
+                    self._decoder.frames_malformed,
+                    self._decoder.frames_resynchronized,
+                    self._decoder.bytes_discarded,
+                )
                 frames = self._decoder.feed(data)
+                await self._emit_parser_changes(before)
                 for frame in frames:
                     inbox.put_nowait(frame)
                 for frame in frames:

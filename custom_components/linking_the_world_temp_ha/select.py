@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MODE_BY_LABEL, MODE_LABELS, SCENE_BY_LABEL, SCENE_LABELS
+from .const import MODE_BY_LABEL, MODE_LABELS, SCENE_BY_LABEL, SCENE_LABELS
 from .entity import LinkingTempEntity
 from .hub import LinkingTempHub
 
@@ -54,5 +54,5 @@ class SystemSceneSelect(LinkingTempEntity, SelectEntity):
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    hub: LinkingTempHub = hass.data[DOMAIN][entry.entry_id]
+    hub: LinkingTempHub = entry.runtime_data.hub
     async_add_entities([SystemModeSelect(hub), SystemSceneSelect(hub)])

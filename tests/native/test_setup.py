@@ -5,10 +5,19 @@ import asyncio
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 
+from custom_components.linking_the_world_temp_ha.binary_sensor import (
+    ControllerConnectionSensor,
+)
+from custom_components.linking_the_world_temp_ha.const import DOMAIN
 from custom_components.linking_the_world_temp_ha.protocol import (
     AsyncMoorgenClient,
     YasHcpDecoder,
     YasHcpFrame,
+    tlv,
+)
+from custom_components.linking_the_world_temp_ha.runtime import (
+    ConnectionStage,
+    LinkingTempRuntime,
 )
 from tests.helpers import FakeControllerBehavior, FakeMC7021Server
 
@@ -25,6 +34,65 @@ async def test_setup_uses_real_home_assistant(
     await hass.async_block_till_done()
 
     assert mock_config_entry.state is ConfigEntryState.LOADED
+
+
+async def test_setup_uses_typed_runtime_data_and_never_stores_hub_in_hass_data(
+    hass, mock_config_entry, fake_controller
+):
+    """Platforms receive the entry runtime rather than a global hub lookup."""
+    mock_config_entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    runtime = mock_config_entry.runtime_data
+    assert isinstance(runtime, LinkingTempRuntime)
+    assert runtime.hub.entry is mock_config_entry
+    assert runtime.health is runtime.hub.health
+    assert mock_config_entry.entry_id not in hass.data.get(DOMAIN, {})
+
+
+async def test_connection_sensor_waits_for_ready_status_stream(
+    hass, setup_integration, fake_controller
+):
+    """A completed TCP/login exchange alone is not controller availability."""
+    runtime = setup_integration
+    sensor = ControllerConnectionSensor(runtime.hub)
+
+    async with asyncio.timeout(1):
+        while runtime.health.stage is not ConnectionStage.READY:
+            await asyncio.sleep(0)
+    assert not runtime.hub.available
+    assert not sensor.is_on
+
+    await fake_controller.async_send_status(
+        tlv(0x0004, runtime.hub.tech_system_mac)
+        + tlv(0x000B, b"\x00")
+        + tlv(0x000A, b"\x01\x01\x00")
+    )
+    async with asyncio.timeout(1):
+        while not runtime.hub.available:
+            await asyncio.sleep(0)
+
+    assert sensor.is_on
+
+
+async def test_connection_stage_transitions_follow_protocol_setup(
+    hass, setup_integration
+):
+    """The lifecycle is observable in protocol order for one successful session."""
+    runtime = setup_integration
+    async with asyncio.timeout(1):
+        while runtime.health.stage is not ConnectionStage.READY:
+            await asyncio.sleep(0)
+
+    stages = runtime.health.snapshot()["stage_history"]
+    assert [item["stage"] for item in stages][-4:] == [
+        ConnectionStage.CONNECTING.value,
+        ConnectionStage.HANDSHAKING.value,
+        ConnectionStage.AUTHENTICATING.value,
+        ConnectionStage.READY.value,
+    ]
 
 
 async def test_fake_controller_handles_fragmented_malformed_and_status_frames(

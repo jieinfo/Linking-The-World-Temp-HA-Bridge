@@ -18,6 +18,11 @@ from custom_components.linking_the_world_temp_ha.protocol import (
     YasHcpFrame,
     tlv,
 )
+from custom_components.linking_the_world_temp_ha.health import HealthTracker
+from custom_components.linking_the_world_temp_ha.runtime import (
+    ConnectionStage,
+    FailureKind,
+)
 from tests.helpers import FakeControllerBehavior, FakeMC7021Server
 
 
@@ -332,3 +337,32 @@ def test_protocol_keeps_cannot_connect_as_the_compatibility_alias() -> None:
     """Legacy callers can catch every new connection-stage failure uniformly."""
     assert CannotConnect is MoorgenConnectionError
     assert MoorgenConnectionError.__bases__ == (Exception,)
+
+
+def test_health_tracker_bounds_and_sanitizes_connection_history() -> None:
+    """Diagnostics retain only concise, privacy-safe lifecycle context."""
+    health = HealthTracker(history_size=2, latency_size=2)
+    health.mark_stage(ConnectionStage.CONNECTING)
+    health.mark_stage(ConnectionStage.HANDSHAKING)
+    health.mark_stage(ConnectionStage.AUTHENTICATING)
+    health.record_failure(
+        FailureKind.AUTH_REJECTED,
+        "password=secret host=10.10.1.246 mac=ff00ffffffff01ff body="
+        "00112233445566778899aabbccddeeff",
+    )
+    health.record_confirmation_latency(0.1)
+    health.record_confirmation_latency(0.2)
+    health.record_confirmation_latency(0.3)
+    health.increment("commands_sent")
+
+    snapshot = health.snapshot()
+    assert snapshot["stage"] == ConnectionStage.AUTHENTICATING.value
+    assert snapshot["failure_kind"] == FailureKind.AUTH_REJECTED.value
+    assert snapshot["counters"]["commands_sent"] == 1
+    assert len(snapshot["stage_history"]) == 2
+    assert len(snapshot["confirmation_latencies"]) == 2
+    message = snapshot["failure_history"][-1]["message"]
+    assert "secret" not in message
+    assert "10.10.1.246" not in message
+    assert "ff00ffffffff01ff" not in message
+    assert "00112233445566778899aabbccddeeff" not in message
