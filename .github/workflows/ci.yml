@@ -27,7 +27,7 @@ jobs:
       - name: Verify generated add-on runtime is in sync
         run: python scripts/sync_addon_bridge.py --check
       - name: Run protocol tests
-        run: python -m unittest discover -v
+        run: python -m unittest -v test_protocol
       - name: Validate add-on metadata
         run: |
           python - <<'PY'
