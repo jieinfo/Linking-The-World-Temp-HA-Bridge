@@ -2,11 +2,14 @@
 
 import asyncio
 import importlib
+import sys
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 
 from custom_components.linking_the_world_temp_ha.binary_sensor import (
     ControllerConnectionSensor,
@@ -27,6 +30,57 @@ from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from tests.helpers import FakeControllerBehavior, FakeMC7021Server
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
+
+
+def _system_status(hub, *, power: bool = True) -> bytes:
+    return (
+        tlv(0x0004, hub.tech_system_mac)
+        + tlv(0x000B, bytes((power,)))
+        + tlv(0x000A, b"\x01\x01\x00")
+    )
+
+
+def _thermostat_status(hub, mac_hex: str) -> bytes:
+    return (
+        tlv(0x0004, bytes.fromhex(mac_hex))
+        + tlv(0x0075, hub.tech_system_mac)
+        + tlv(0x0030, b"r0100")
+        + tlv(0x000A, bytes((44, 0xF6, 0x00, 58, 0)))
+        + tlv(0x000B, b"\x01")
+    )
+
+
+async def _wait_for(predicate, *, timeout: float = 1) -> None:
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0)
+
+
+def _integration_tasks() -> list[asyncio.Task[object]]:
+    return [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task()
+        and task.get_name().startswith("linking-temp")
+        and not task.done()
+    ]
+
+
+@pytest_asyncio.fixture
+async def managed_integration(
+    hass, setup_integration, mock_config_entry, fake_controller
+):
+    """Ensure a failing lifecycle assertion cannot strand its TCP peer."""
+    try:
+        yield setup_integration
+    finally:
+        try:
+            if mock_config_entry.state is ConfigEntryState.LOADED:
+                await asyncio.wait_for(
+                    hass.config_entries.async_unload(mock_config_entry.entry_id), timeout=1
+                )
+        finally:
+            await fake_controller.async_stop()
 
 
 async def test_setup_uses_real_home_assistant(
@@ -405,3 +459,95 @@ async def test_fake_controller_writes_multiple_status_frames_together(
         await fake_controller.async_stop()
 
     assert statuses == [b"first", b"second"]
+
+
+async def test_restart_preserves_dynamic_panel_identity_and_restores_unavailable(
+    hass, managed_integration, fake_controller, mock_config_entry
+):
+    """Reload retains panel identity but waits for a new controller report."""
+    first_runtime = managed_integration
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(first_runtime.hub))
+    await fake_controller.async_send_status(_thermostat_status(first_runtime.hub, mac_hex))
+    await _wait_for(lambda: mac_hex in first_runtime.hub.thermostats)
+    await hass.async_block_till_done()
+    entity_registry = er.async_get(hass)
+    unique_id = f"{mock_config_entry.entry_id}_thermostat_{mac_hex}_climate"
+    original_entity_id = entity_registry.async_get_entity_id("climate", DOMAIN, unique_id)
+    assert original_entity_id is not None
+
+    assert await asyncio.wait_for(
+        hass.config_entries.async_unload(mock_config_entry.entry_id), timeout=1
+    )
+    assert await asyncio.wait_for(
+        hass.config_entries.async_setup(mock_config_entry.entry_id), timeout=1
+    )
+    reloaded = mock_config_entry.runtime_data
+    await _wait_for(lambda: reloaded.health.stage is ConnectionStage.READY)
+    assert reloaded is not first_runtime
+    assert mac_hex in reloaded.hub.thermostats
+    assert not reloaded.hub.thermostats[mac_hex].available
+    assert (
+        entity_registry.async_get_entity_id("climate", DOMAIN, unique_id)
+        == original_entity_id
+    )
+
+    await fake_controller.async_send_status(_system_status(reloaded.hub))
+    await fake_controller.async_send_status(_thermostat_status(reloaded.hub, mac_hex))
+    await _wait_for(lambda: reloaded.hub.thermostats[mac_hex].available)
+    assert await asyncio.wait_for(
+        hass.config_entries.async_unload(mock_config_entry.entry_id), timeout=1
+    )
+    await hass.async_block_till_done()
+    assert reloaded.hub._runner is None
+    await fake_controller.async_stop()
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 13),
+    reason="CI's supported Python 3.13 Home Assistant runtime owns config reload coverage",
+)
+async def test_config_entry_reload_restarts_the_native_runtime(
+    hass, managed_integration, mock_config_entry
+):
+    """The supported HA runtime can reload a live entry without retaining its hub."""
+    first_runtime = managed_integration
+    assert await asyncio.wait_for(
+        hass.config_entries.async_reload(mock_config_entry.entry_id), timeout=5
+    )
+    reloaded = mock_config_entry.runtime_data
+    await _wait_for(lambda: reloaded.health.stage is ConnectionStage.READY)
+    assert reloaded is not first_runtime
+
+
+async def test_unload_closes_background_tasks(
+    hass, setup_integration, mock_config_entry, fake_controller
+):
+    """An explicit HA unload completes promptly and closes the TCP workers."""
+    runtime = setup_integration
+    assert await asyncio.wait_for(
+        hass.config_entries.async_unload(mock_config_entry.entry_id), timeout=1
+    )
+    await hass.async_block_till_done()
+    assert runtime.hub._runner is None
+    assert not _integration_tasks()
+    await fake_controller.async_stop()
+
+
+async def test_remove_unloads_workers_and_clears_entry_repairs(
+    hass, setup_integration, mock_config_entry, fake_controller
+):
+    """Normal HA removal unloads once and clears all entry-linked Repairs."""
+    runtime = setup_integration
+    await runtime.hub.repairs.async_set_protocol_incompatible(True)
+    issue_id = f"protocol_incompatible_{mock_config_entry.entry_id}"
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+    assert await asyncio.wait_for(
+        hass.config_entries.async_remove(mock_config_entry.entry_id), timeout=1
+    )
+    await hass.async_block_till_done()
+    assert runtime.hub._runner is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    assert not _integration_tasks()
+    await fake_controller.async_stop()

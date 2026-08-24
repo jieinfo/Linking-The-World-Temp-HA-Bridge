@@ -47,12 +47,18 @@ jobs:
 
   native:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pytest_ha: ['0.13.354', '0.13.357']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
       - name: Install native test dependencies
-        run: python -m pip install -r requirements_test.txt
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest-cov==6.2.1 pytest-homeassistant-custom-component==${{ matrix.pytest_ha }}
       - name: Run native integration tests
-        run: pytest --cov=custom_components/linking_the_world_temp_ha --cov-report=term-missing
+        run: pytest -q --cov=custom_components.linking_the_world_temp_ha --cov-report=term-missing --cov-fail-under=95

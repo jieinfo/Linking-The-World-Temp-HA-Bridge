@@ -43,6 +43,26 @@
 - Ruling: classify `(kind=0x02, opcode=0x05)` with TLV `0x031c=0x01` as explicit authentication rejection — packet evidence supplied 2026-08-24 proves the wrong-password path — risk if firmware differs is contained by requiring both the login-stage opcode and captured TLV.
 - Ruling: pause reconnects after explicit rejection and wait for entry reload — avoids repeated known-invalid logins — cost is that a transient erroneous rejection requires user reauth/reload.
 - Ruling: local baseline may run on bundled Python 3.12, while CI is authoritative for Python 3.13/HA 2026.8 — no local 3.13 runtime is installed — risk is caught by the required CI matrix before release.
+- Ruling: Task 8 lifecycle coverage uses bounded Home Assistant lifecycle calls
+  and condition-based readiness checks. A local Python 3.12 `async_reload`
+  fixture path is skipped only there; CI's supported Python 3.13 matrix owns
+  the actual reload assertion. This preserves, rather than removes, lifecycle
+  coverage.
+
+## Task 8 implementation
+
+- Added real HA E2E controls, app-push synchronization, dynamic panel entities,
+  policy enforcement, and 100-frame/52-setpoint stress coverage.
+- Root-caused and fixed a fixture-only close deadlock: fake server listener
+  shutdown now cancels/awaits owned handlers and bounds close waits. Explicit
+  restart, unload, and remove assertions now complete deterministically.
+- Added restart/store, uninstall identity/task/Repair, config-flow, protocol,
+  Repair, and panel validation coverage. Local verification is 141 passed,
+  1 skipped, with 95.36% coverage.
+- Native CI is now Python 3.13 matrixed against pytest-HA 0.13.354 and
+  0.13.357, each enforcing the exact 95% coverage command. HACS/hassfest remain
+  in `validate-integration.yml`.
+- Full details: `task-8-report.md`.
 
 ## Packet evidence
 
@@ -138,6 +158,18 @@
 - Accepted P1: production warning/error command-timeout logs include `pending.label` and raw target, exposing room names and full panel MACs.
 - Accepted P2: diagnostics metric-content tests seed counters directly instead of exercising real reconnect/parser/measurement/command event paths, so missing or duplicate instrumentation can pass.
 - Fix round 1 dispatched with default-log canaries and event-driven metric assertions.
+- Fix round 1 commit: `c0e9c1a fix: redact command diagnostics logs`.
+- Scoped re-review: command-log privacy is closed; accepted remaining P2 test gap because the event-driven test stops after the first connection and never executes the real reconnect counter branch.
+- Fix round 2 dispatched for an actual disconnect/reconnect cycle with exact counter assertions.
+- Fix round 2 commit: `4bc5cb5 test: cover diagnostics reconnect counters`.
+- Final scoped re-review: PASS; the real `_async_run()` test proves two attempts, two successes, one reconnect, and two disconnects without direct counter mutation.
+- Verification: 117 complete native tests passed.
+- Task 7: complete.
+- Fix round 2 completed locally with a real `_async_run` reconnect test using a
+  programmable fake client; it asserts two attempts, two successes, one
+  reconnect, and two authenticated-session disconnects, with runner cleanup.
+- Fix round 2 verification: 6 diagnostics tests and 117 native tests passed;
+  `git diff --check` passed.
 - Fix round 1 completed locally:
   - command timeout, retry, queued-continuation, and send-failure logs now use
     only anonymous target type, command code, attempt, elapsed/timeout, and

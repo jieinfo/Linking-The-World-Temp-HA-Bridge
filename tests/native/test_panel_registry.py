@@ -10,6 +10,7 @@ from custom_components.linking_the_world_temp_ha.panel_registry import (
     STALE_PANEL_SECONDS,
     PanelRegistry,
 )
+import custom_components.linking_the_world_temp_ha.panel_registry as registry_module
 
 
 def utc(value: str) -> datetime:
@@ -271,3 +272,35 @@ async def test_stale_panels_begin_at_exactly_thirty_observed_days(hass) -> None:
     monotonic[0] += 1
     await registry.async_note_status_stream(now)
     assert registry.stale_macs == ("ff00ffffffff01ff",)
+
+
+async def test_registry_validates_mutations_and_ignores_idempotent_metadata(hass) -> None:
+    """Bad panel identities cannot alter the persisted lifecycle inventory."""
+    now = utc("2026-08-24T00:00:00")
+    registry = PanelRegistry(hass, "mutation-validation", clock=lambda: now)
+    with pytest.raises(ValueError, match="MAC"):
+        await registry.async_note_panel_report("not-a-mac", "r0100", now)
+    with pytest.raises(ValueError, match="room ID"):
+        await registry.async_note_panel_report("ff00ffffffff01ff", 1, now)
+    await registry.async_note_panel_report("ff00ffffffff01ff", "r0100", now)
+
+    assert await registry.async_set_panel_available("ff00ffffffff01ff", False)
+    assert not await registry.async_set_panel_available("ff00ffffffff01ff", False)
+    with pytest.raises(ValueError, match="MAC"):
+        await registry.async_set_panel_available("bad", True)
+    assert not await registry.async_set_room_name("r0100", 1)
+    assert await registry.async_set_room_name("r0100", "客餐厅")
+    assert not await registry.async_set_room_name("r0100", "客餐厅")
+    await registry.async_delete_panel("bad")
+    await registry.async_delete_panel("ff00ffffffff01ff")
+    assert not registry.records
+
+
+def test_registry_rejects_naive_dates_and_invalid_storage_shapes() -> None:
+    """Only timezone-aware v2 facts are allowed back into a restored runtime."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        registry_module._utc(datetime(2026, 8, 24))
+    assert registry_module._parse_utc("not-a-date") is None
+    assert registry_module._parse_utc("2026-08-24T00:00:00") is None
+    assert registry_module._normalize_mac(None) is None
+    assert PanelRegistry._record_from_storage([]) is None

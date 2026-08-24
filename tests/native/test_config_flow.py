@@ -290,3 +290,172 @@ async def test_reauth_updates_once_and_uses_the_entry_update_listener(
     assert result["type"] == "abort"
     assert result["reason"] == "reauth_successful"
     assert updates == [mock_config_entry]
+
+
+async def test_user_flow_creates_a_normalized_entry_after_a_real_handshake(
+    hass, socket_enabled
+) -> None:
+    """The user form creates one stable entry after the captured TCP handshake."""
+    server = FakeMC7021Server()
+    await server.async_start()
+    try:
+        data = _connection_data(server.host)
+        data["port"] = server.port
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "user"}, data=data
+        )
+    finally:
+        await server.async_stop()
+
+    assert result["type"] == "create_entry"
+    assert result["title"] == f"Linking The World Temp HA ({server.host})"
+    assert result["data"]["client_id"] == "ff9549d5891998e5"
+    assert result["data"]["tech_system_mac"] == "ff00ffffffff00ff"
+
+
+async def test_reconfigure_updates_the_same_entry_and_rejects_duplicate_target(
+    hass, mock_config_entry, monkeypatch
+) -> None:
+    """Reconfigure preserves entities and refuses another entry's controller."""
+    import custom_components.linking_the_world_temp_ha.config_flow as config_flow
+
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(mock_config_entry, unique_id="10.0.0.1:9000")
+
+    async def validate(_data) -> None:
+        return None
+
+    monkeypatch.setattr(config_flow, "_async_validate_connection", validate)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": mock_config_entry.entry_id},
+        data=None,
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=_connection_data("10.0.0.2")
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+    assert mock_config_entry.data["host"] == "10.0.0.2"
+    assert mock_config_entry.unique_id == "10.0.0.2:9000"
+
+    duplicate = mock_config_entry.__class__(
+        domain=DOMAIN,
+        data=_connection_data("10.0.0.3"),
+        unique_id="10.0.0.4:9000",
+    )
+    duplicate.add_to_hass(hass)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": mock_config_entry.entry_id},
+        data=None,
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=_connection_data("10.0.0.4")
+    )
+    assert result["type"] == "abort"
+    assert result["reason"] == "already_configured"
+
+
+async def test_options_flow_validates_runtime_safety_ranges(hass, mock_config_entry) -> None:
+    """Options expose safety defaults and reject impossible timeout values."""
+    mock_config_entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    assert result["type"] == "form"
+    assert result["step_id"] == "init"
+
+    with pytest.raises(Exception):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={
+                "allow_control": True,
+                "command_min_interval": 0,
+                "command_confirmation_timeout": 0.5,
+                "controller_silence_timeout": 30,
+                "thermostat_offline_after": 0,
+            },
+        )
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            "allow_control": False,
+            "command_min_interval": 1,
+            "command_confirmation_timeout": 3,
+            "controller_silence_timeout": 60,
+            "thermostat_offline_after": 60,
+        },
+    )
+    assert result["type"] == "create_entry"
+    assert result["data"]["allow_control"] is False
+
+
+async def test_user_flow_labels_invalid_and_unexpected_input_without_tracebacks(
+    hass, monkeypatch
+) -> None:
+    """Both invalid local fields and unexpected validation faults stay user-safe."""
+    import custom_components.linking_the_world_temp_ha.config_flow as config_flow
+
+    invalid = _connection_data()
+    invalid["host"] = " "
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}, data=invalid
+    )
+    assert result["errors"] == {"base": "invalid_config"}
+
+    async def explode(_data) -> None:
+        raise RuntimeError("unreachable controller")
+
+    monkeypatch.setattr(config_flow, "_async_validate_connection", explode)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}, data=_connection_data("10.0.0.9")
+    )
+    assert result["errors"] == {"base": "unknown"}
+    assert config_flow._connection_error_key(RuntimeError()) is None
+
+
+async def test_reconfigure_and_reauth_keep_unknown_validation_failures_in_the_form(
+    hass, mock_config_entry, monkeypatch
+) -> None:
+    """Credential and address errors never mutate an entry before validation passes."""
+    import custom_components.linking_the_world_temp_ha.config_flow as config_flow
+
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(mock_config_entry, unique_id="10.0.0.1:9000")
+
+    async def explode(_data) -> None:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(config_flow, "_async_validate_connection", explode)
+    reconfigure = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": mock_config_entry.entry_id},
+        data=None,
+    )
+    result = await hass.config_entries.flow.async_configure(
+        reconfigure["flow_id"], user_input=_connection_data("10.0.0.2")
+    )
+    assert result["errors"] == {"base": "unknown"}
+
+    invalid_reconfigure = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": mock_config_entry.entry_id},
+        data=None,
+    )
+    invalid = _connection_data()
+    invalid["host"] = " "
+    result = await hass.config_entries.flow.async_configure(
+        invalid_reconfigure["flow_id"], user_input=invalid
+    )
+    assert result["errors"] == {"base": "invalid_config"}
+
+    reauth = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reauth", "entry_id": mock_config_entry.entry_id},
+        data=dict(mock_config_entry.data),
+    )
+    result = await hass.config_entries.flow.async_configure(
+        reauth["flow_id"], user_input={"username": "admin", "password": "bad"}
+    )
+    assert result["errors"] == {"base": "unknown"}

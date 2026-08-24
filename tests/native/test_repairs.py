@@ -53,6 +53,18 @@ def _utc(value: str) -> datetime:
     return datetime.fromisoformat(value).replace(tzinfo=UTC)
 
 
+async def test_fix_flow_rejects_incomplete_or_unknown_issue_metadata(hass) -> None:
+    """Repair routing refuses malformed issue metadata before changing HA state."""
+    with pytest.raises(ValueError, match="config entry"):
+        await async_create_fix_flow(hass, "login_timeout_x", None)
+    with pytest.raises(ValueError, match="panel identity"):
+        await async_create_fix_flow(
+            hass, "stale_panel_x", {"entry_id": "entry"}
+        )
+    with pytest.raises(ValueError, match="Unsupported"):
+        await async_create_fix_flow(hass, "unknown_x", {"entry_id": "entry"})
+
+
 async def _make_stale_hub(hass, mock_config_entry):
     """Create one hub with a panel exactly at the observed-absence threshold."""
     now = _utc("2026-08-24T00:00:00")
