@@ -47,6 +47,7 @@ class FakeMC7021Server:
         self.host = "127.0.0.1"
         self.port = 0
         self.received_frames: list[YasHcpFrame] = []
+        self.received_frame_event = asyncio.Event()
         self._server: asyncio.AbstractServer | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._sequence = 0
@@ -106,6 +107,7 @@ class FakeMC7021Server:
             while data := await reader.read(4096):
                 for frame in decoder.feed(data):
                     self.received_frames.append(frame)
+                    self.received_frame_event.set()
                     await self._async_handle_frame(frame)
         finally:
             if self._writer is writer:

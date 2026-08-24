@@ -5,7 +5,11 @@ import asyncio
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 
-from custom_components.linking_the_world_temp_ha.protocol import AsyncMoorgenClient
+from custom_components.linking_the_world_temp_ha.protocol import (
+    AsyncMoorgenClient,
+    YasHcpDecoder,
+    YasHcpFrame,
+)
 from tests.helpers import FakeControllerBehavior, FakeMC7021Server
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -60,3 +64,86 @@ async def test_fake_controller_handles_fragmented_malformed_and_status_frames(
     assert [(frame.kind, frame.opcode) for frame in fake_controller.received_frames][
         :2
     ] == [(1, 1), (2, 4)]
+
+
+async def test_fake_controller_delays_a_configured_stage_response(socket_enabled):
+    """Hold a hello reply until the configured server-side delay expires."""
+    fake_controller = FakeMC7021Server(
+        FakeControllerBehavior(stage_delays={"hello": 0.05})
+    )
+    await fake_controller.async_start()
+    reader, writer = await asyncio.open_connection(
+        fake_controller.host, fake_controller.port
+    )
+    hello = YasHcpFrame(1, 1, 7, b"")
+    response = YasHcpFrame(1, 3, 7, b"")
+    response_task = asyncio.create_task(reader.readexactly(len(response.encode())))
+    try:
+        writer.write(hello.encode())
+        await writer.drain()
+        await asyncio.wait_for(fake_controller.received_frame_event.wait(), timeout=1)
+
+        assert not response_task.done()
+        assert YasHcpDecoder().feed(await response_task) == [response]
+    finally:
+        response_task.cancel()
+        await asyncio.gather(response_task, return_exceptions=True)
+        writer.close()
+        await writer.wait_closed()
+        await fake_controller.async_stop()
+
+
+async def test_fake_controller_closes_after_a_configured_stage(socket_enabled):
+    """Return EOF after the configured stage without a test-level delay."""
+    fake_controller = FakeMC7021Server(
+        FakeControllerBehavior(hello_reply=None, close_after_stage="hello")
+    )
+    await fake_controller.async_start()
+    reader, writer = await asyncio.open_connection(
+        fake_controller.host, fake_controller.port
+    )
+    try:
+        writer.write(YasHcpFrame(1, 1, 0, b"").encode())
+        await writer.drain()
+
+        assert await asyncio.wait_for(reader.read(), timeout=1) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await fake_controller.async_stop()
+
+
+async def test_fake_controller_writes_multiple_status_frames_together(
+    socket_enabled,
+):
+    """Deliver concatenated frames through the production client decoder."""
+    statuses: list[bytes] = []
+    received_statuses = asyncio.Event()
+    fake_controller = FakeMC7021Server()
+    await fake_controller.async_start()
+    client = AsyncMoorgenClient(
+        fake_controller.host,
+        fake_controller.port,
+        "admin",
+        "secret",
+    )
+
+    async def record_status(body: bytes) -> None:
+        if body in {b"first", b"second"}:
+            statuses.append(body)
+        if len(statuses) == 2:
+            received_statuses.set()
+
+    client.on_status = record_status
+    try:
+        await client.connect()
+        await fake_controller.async_send_frames(
+            YasHcpFrame(5, 0x0C, 10, b"first"),
+            YasHcpFrame(5, 0x0C, 11, b"second"),
+        )
+        await asyncio.wait_for(received_statuses.wait(), timeout=1)
+    finally:
+        await client.close()
+        await fake_controller.async_stop()
+
+    assert statuses == [b"first", b"second"]
