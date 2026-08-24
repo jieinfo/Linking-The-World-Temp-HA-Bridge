@@ -651,6 +651,8 @@ class LinkingTempHub:
                     self.health.increment("commands_coalesced")
                 self._notify()
                 return
+            if coalesce:
+                self._queued.pop(target, None)
             now = time.monotonic()
             if self._last_command_at is not None:
                 remaining = self.command_min_interval - (now - self._last_command_at)

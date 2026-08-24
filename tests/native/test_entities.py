@@ -15,6 +15,7 @@ from homeassistant.helpers import entity_registry as er
 import custom_components.linking_the_world_temp_ha.hub as hub_module
 from custom_components.linking_the_world_temp_ha.health import HealthTracker
 from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
+from custom_components.linking_the_world_temp_ha.command_queue import QueuedCommand
 from custom_components.linking_the_world_temp_ha.panel_registry import PanelRegistry
 from custom_components.linking_the_world_temp_ha.protocol import (
     ThermostatState,
@@ -145,6 +146,42 @@ async def test_thermostat_power_service_skips_an_already_applied_state(
     ) == command_count
     assert f"thermostat_{mac_hex}" not in hub._pending
     assert hub.last_command_status.startswith("confirmed:")
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_latest_temperature_replaces_a_queue_waiting_for_dispatch(
+    hass, setup_integration, fake_controller
+):
+    """A new setpoint wins if an older queue value outlives its pending command."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await fake_controller.async_send_status(_thermostat_status(hub, mac_hex))
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    target = f"thermostat_{mac_hex}"
+    hub._queued[target] = QueuedCommand(
+        f"{hub.thermostat_name(hub.thermostats[mac_hex])} 设定温度",
+        target,
+        {"target_temperature": "23"},
+        bytes.fromhex(mac_hex),
+        3,
+        46,
+    )
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+
+    await hass.services.async_call(
+        climate.DOMAIN,
+        climate.SERVICE_SET_TEMPERATURE,
+        {"entity_id": climate_entity, ATTR_TEMPERATURE: 25},
+        blocking=True,
+    )
+
+    assert target not in hub._queued
+    assert hub._pending[target].expected == {"target_temperature": "25"}
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
