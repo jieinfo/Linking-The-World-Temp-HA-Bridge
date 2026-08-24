@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter, deque
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from statistics import fmean
 from typing import Any
@@ -38,12 +39,36 @@ _SECRET_VALUE = re.compile(
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _HEX_IDENTIFIER = re.compile(r"(?i)\b[0-9a-f]{16,}\b")
 _COLON_MAC = re.compile(r"(?i)\b(?:[0-9a-f]{2}:){5,7}[0-9a-f]{2}\b")
+_BRACKETED_IPV6_ENDPOINT = re.compile(r"\[[0-9a-fA-F:.%]+\](?::\d{1,5})?")
+_BARE_IPV6 = re.compile(
+    r"(?<![0-9a-fA-F:])(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F:]+(?![0-9a-fA-F:])"
+)
+_DNS_ENDPOINT = re.compile(
+    r"(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"(?:[a-z]{2,63}|local)(?::\d{1,5})?\b"
+)
+_AT_HOST_PORT = re.compile(
+    r"(?i)\bat\s+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?::\d{1,5})\b"
+)
 
 
-def _sanitize_message(message: object) -> str:
+def _sanitize_message(
+    message: object, secrets: Mapping[str, object] | None = None
+) -> str:
     """Retain an actionable short message without secrets or transport data."""
     text = " ".join(str(message).split())[:512]
+    if secrets:
+        ordered_secrets = sorted(
+            secrets.items(), key=lambda item: len(str(item[1])), reverse=True
+        )
+        for name, value in ordered_secrets:
+            if value is not None and (secret := str(value)):
+                text = text.replace(secret, f"<redacted-{name}>")
     text = _SECRET_VALUE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    text = _BRACKETED_IPV6_ENDPOINT.sub("<redacted-ipv6>", text)
+    text = _BARE_IPV6.sub("<redacted-ipv6>", text)
+    text = _DNS_ENDPOINT.sub("<redacted-host>", text)
+    text = _AT_HOST_PORT.sub("at <redacted-host>", text)
     text = _IPV4.sub("<redacted-ip>", text)
     text = _COLON_MAC.sub("<redacted-mac>", text)
     return _HEX_IDENTIFIER.sub("<redacted-id>", text)
@@ -64,14 +89,20 @@ class HealthTracker:
         """Increment one named counter without retaining event payloads."""
         self._counters[name] += value
 
-    def record_failure(self, kind: FailureKind, message: object) -> None:
+    def record_failure(
+        self,
+        kind: FailureKind,
+        message: object,
+        *,
+        secrets: Mapping[str, object] | None = None,
+    ) -> None:
         """Store a sanitized, bounded summary of the newest failure."""
         self.failure_kind = kind
         self._failure_history.append(
             {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "kind": kind.value,
-                "message": _sanitize_message(message),
+                "message": _sanitize_message(message, secrets),
             }
         )
 
@@ -97,8 +128,8 @@ class HealthTracker:
             "stage": self.stage.value,
             "failure_kind": self.failure_kind.value,
             "counters": dict(self._counters),
-            "stage_history": list(self._stage_history),
-            "failure_history": list(self._failure_history),
+            "stage_history": [dict(item) for item in self._stage_history],
+            "failure_history": [dict(item) for item in self._failure_history],
             "confirmation_latencies": latencies,
             "confirmation_latency_summary": {
                 "count": len(latencies),

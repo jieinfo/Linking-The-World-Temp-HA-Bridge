@@ -366,3 +366,72 @@ def test_health_tracker_bounds_and_sanitizes_connection_history() -> None:
     assert "10.10.1.246" not in message
     assert "ff00ffffffff01ff" not in message
     assert "00112233445566778899aabbccddeeff" not in message
+
+
+@pytest.mark.parametrize(
+    ("host", "message"),
+    [
+        (
+            "house-controller.lan",
+            "Could not connect to MC7021 at house-controller.lan:9000",
+        ),
+        (
+            "10.10.1.246",
+            "Could not connect to MC7021 at 10.10.1.246:9000",
+        ),
+        (
+            "2001:db8:85a3::8a2e:370:7334",
+            "Could not connect to MC7021 at [2001:db8:85a3::8a2e:370:7334]:9000",
+        ),
+    ],
+    ids=["dns", "ipv4", "ipv6"],
+)
+def test_health_tracker_redacts_explicit_controller_endpoints(
+    host: str, message: str
+) -> None:
+    """Configured controller endpoints cannot escape diagnostics history."""
+    health = HealthTracker()
+
+    health.record_failure(FailureKind.TCP_TIMEOUT, message, secrets={"host": host})
+
+    recorded = health.snapshot()["failure_history"][-1]["message"]
+    assert host not in recorded
+    assert "<redacted-host>" in recorded
+
+
+@pytest.mark.parametrize(
+    ("message", "secret"),
+    [
+        ("Could not connect at house-controller.lan:9000", "house-controller.lan"),
+        ("Could not connect at 10.10.1.246:9000", "10.10.1.246"),
+        (
+            "Could not connect at [2001:db8:85a3::8a2e:370:7334]:9000",
+            "2001:db8:85a3::8a2e:370:7334",
+        ),
+    ],
+    ids=["dns", "ipv4", "ipv6"],
+)
+def test_health_tracker_defensively_redacts_endpoint_messages(
+    message: str, secret: str
+) -> None:
+    """Unexpected transport messages remain safe even without explicit values."""
+    health = HealthTracker()
+
+    health.record_failure(FailureKind.TCP_TIMEOUT, message)
+
+    assert secret not in health.snapshot()["failure_history"][-1]["message"]
+
+
+def test_health_tracker_snapshot_does_not_share_history_records() -> None:
+    """Callers must not be able to mutate bounded health history in place."""
+    health = HealthTracker()
+    health.mark_stage(ConnectionStage.CONNECTING)
+    health.record_failure(FailureKind.TCP_TIMEOUT, "controller unavailable")
+
+    snapshot = health.snapshot()
+    snapshot["stage_history"][0]["stage"] = "mutated"
+    snapshot["failure_history"][0]["message"] = "mutated"
+
+    next_snapshot = health.snapshot()
+    assert next_snapshot["stage_history"][0]["stage"] == "connecting"
+    assert next_snapshot["failure_history"][0]["message"] == "controller unavailable"

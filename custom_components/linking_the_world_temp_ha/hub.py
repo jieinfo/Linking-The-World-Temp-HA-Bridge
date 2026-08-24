@@ -146,6 +146,7 @@ class LinkingTempHub:
             hass, 1, f"{DOMAIN}.{entry.entry_id}.panels"
         )
         self._has_attempted_connection = False
+        self._session_authenticated = False
 
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
@@ -326,6 +327,7 @@ class LinkingTempHub:
                 client.on_status = self._async_status_received
                 client.on_stage = self._async_protocol_stage_received
                 client.on_parser_event = self._async_parser_event
+                self._session_authenticated = False
                 self._client = client
                 await client.connect()
                 self.connected = True
@@ -363,6 +365,7 @@ class LinkingTempHub:
             self.health.increment("handshake_successes")
         elif connection_stage is ConnectionStage.READY:
             self.connected = True
+            self._session_authenticated = True
             self.health.increment("login_successes")
         self._mark_stage(connection_stage)
         self._notify()
@@ -403,9 +406,22 @@ class LinkingTempHub:
             self.health.increment("login_failures")
         elif isinstance(error, IncompatibleProtocol):
             kind = FailureKind.PROTOCOL
+            if self.health.stage is ConnectionStage.HANDSHAKING:
+                self.health.increment("handshake_failures")
+            elif self.health.stage is ConnectionStage.AUTHENTICATING:
+                self.health.increment("login_failures")
         elif "silent" in str(error).lower():
             kind = FailureKind.STATUS_SILENCE
-        self.health.record_failure(kind, error)
+        self.health.record_failure(
+            kind,
+            error,
+            secrets={
+                "host": self.host,
+                "username": self.username,
+                "password": self.password,
+                "client_id": self.client_id,
+            },
+        )
 
     async def _async_session_loop(self, client: AsyncMoorgenClient) -> None:
         heartbeat_at = 0.0
@@ -435,11 +451,12 @@ class LinkingTempHub:
     async def _async_disconnect(self) -> None:
         client = self._client
         self._client = None
-        was_connected = client is not None or self.connected
+        was_authenticated = getattr(self, "_session_authenticated", False)
+        self._session_authenticated = False
         self._mark_stage(ConnectionStage.DISCONNECTED)
         self.protocol_verified = False
         self.protocol_status = "disconnected"
-        if was_connected:
+        if was_authenticated:
             self.health.increment("disconnects")
         for thermostat in self.thermostats.values():
             thermostat.available = False

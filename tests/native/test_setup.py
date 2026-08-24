@@ -1,6 +1,8 @@
 """Real Home Assistant integration setup tests."""
 
 import asyncio
+import importlib
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
@@ -19,6 +21,8 @@ from custom_components.linking_the_world_temp_ha.runtime import (
     ConnectionStage,
     LinkingTempRuntime,
 )
+from custom_components.linking_the_world_temp_ha.health import HealthTracker
+from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from tests.helpers import FakeControllerBehavior, FakeMC7021Server
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -50,6 +54,153 @@ async def test_setup_uses_typed_runtime_data_and_never_stores_hub_in_hass_data(
     assert runtime.hub.entry is mock_config_entry
     assert runtime.health is runtime.hub.health
     assert mock_config_entry.entry_id not in hass.data.get(DOMAIN, {})
+
+
+async def test_setup_stops_hub_when_platform_forward_fails(
+    hass, mock_config_entry, monkeypatch
+):
+    """A failed HA platform setup cannot leave the controller runner alive."""
+    integration = importlib.import_module("custom_components.linking_the_world_temp_ha")
+
+    class TrackingHub:
+        instance: "TrackingHub | None" = None
+
+        def __init__(self, _hass, _entry, _health) -> None:
+            self.started = False
+            self.stopped = False
+            TrackingHub.instance = self
+
+        async def async_start(self) -> None:
+            self.started = True
+
+        async def async_stop(self) -> None:
+            self.stopped = True
+
+    async def fail_forward(*_args) -> None:
+        raise RuntimeError("platform forward failed")
+
+    monkeypatch.setattr(integration, "LinkingTempHub", TrackingHub)
+    monkeypatch.setattr(hass.config_entries, "async_forward_entry_setups", fail_forward)
+
+    with pytest.raises(RuntimeError, match="platform forward failed"):
+        await integration.async_setup_entry(hass, mock_config_entry)
+
+    assert TrackingHub.instance is not None
+    assert TrackingHub.instance.started
+    assert TrackingHub.instance.stopped
+    assert mock_config_entry.runtime_data is None
+
+
+async def test_setup_cancellation_stops_hub_before_propagating(
+    hass, mock_config_entry, monkeypatch
+):
+    """Cancellation during platform forwarding must clean up before re-raising."""
+    integration = importlib.import_module("custom_components.linking_the_world_temp_ha")
+    forward_started = asyncio.Event()
+
+    class TrackingHub:
+        instance: "TrackingHub | None" = None
+
+        def __init__(self, _hass, _entry, _health) -> None:
+            self.started = False
+            self.stopped = False
+            TrackingHub.instance = self
+
+        async def async_start(self) -> None:
+            self.started = True
+
+        async def async_stop(self) -> None:
+            self.stopped = True
+
+    async def block_forward(*_args) -> None:
+        forward_started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(integration, "LinkingTempHub", TrackingHub)
+    monkeypatch.setattr(hass.config_entries, "async_forward_entry_setups", block_forward)
+    setup = asyncio.create_task(integration.async_setup_entry(hass, mock_config_entry))
+    await asyncio.wait_for(forward_started.wait(), timeout=1)
+    setup.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await setup
+
+    assert TrackingHub.instance is not None
+    assert TrackingHub.instance.stopped
+    assert mock_config_entry.runtime_data is None
+
+
+async def test_setup_stops_hub_when_runtime_assignment_fails(hass, monkeypatch):
+    """A runtime-data assignment error cannot strand a newly started hub."""
+    integration = importlib.import_module("custom_components.linking_the_world_temp_ha")
+
+    class TrackingHub:
+        instance: "TrackingHub | None" = None
+
+        def __init__(self, _hass, _entry, _health) -> None:
+            self.stopped = False
+            TrackingHub.instance = self
+
+        async def async_start(self) -> None:
+            return None
+
+        async def async_stop(self) -> None:
+            self.stopped = True
+
+    class RuntimeDataFailureEntry:
+        @property
+        def runtime_data(self):
+            return None
+
+        @runtime_data.setter
+        def runtime_data(self, _value) -> None:
+            raise RuntimeError("runtime assignment failed")
+
+    monkeypatch.setattr(integration, "LinkingTempHub", TrackingHub)
+
+    with pytest.raises(RuntimeError, match="runtime assignment failed"):
+        await integration.async_setup_entry(hass, RuntimeDataFailureEntry())
+
+    assert TrackingHub.instance is not None
+    assert TrackingHub.instance.stopped
+
+
+async def test_command_health_tracks_send_confirmation_and_coalescing(
+    hass, mock_config_entry
+):
+    """The core tracked-command flow records usable health metrics."""
+    health = HealthTracker()
+    hub = LinkingTempHub(hass, mock_config_entry, health)
+    hub.allow_control = True
+    hub.connected = True
+    hub.protocol_verified = True
+    health.mark_stage(ConnectionStage.READY)
+    hub._client = AsyncMock()
+
+    await hub._async_send_tracked(
+        "thermostat_test",
+        "测试温控面板 设定温度",
+        {"target_temperature": "22"},
+        b"test-panel-mac",
+        3,
+        44,
+        coalesce=True,
+    )
+    await hub._async_send_tracked(
+        "thermostat_test",
+        "测试温控面板 设定温度",
+        {"target_temperature": "23"},
+        b"test-panel-mac",
+        3,
+        46,
+        coalesce=True,
+    )
+    hub._confirm_pending("thermostat_test", {"target_temperature": "22"})
+
+    counters = health.snapshot()["counters"]
+    assert counters["commands_sent"] == 1
+    assert counters["commands_coalesced"] == 1
+    assert counters["commands_confirmed"] == 1
 
 
 async def test_connection_sensor_waits_for_ready_status_stream(
