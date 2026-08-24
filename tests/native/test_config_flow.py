@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 try:
+    import voluptuous as vol
     from homeassistant.helpers import config_validation as cv
     from voluptuous_serialize import convert
 
@@ -61,7 +62,7 @@ class ConfigFlowTest(unittest.TestCase):
             with self.subTest(field=field):
                 data = dict(valid)
                 data[field] = value
-                with self.assertRaises(ValueError):
+                with self.assertRaises((ValueError, vol.Invalid)):
                     _normalize_connection_data(data)
 
 
