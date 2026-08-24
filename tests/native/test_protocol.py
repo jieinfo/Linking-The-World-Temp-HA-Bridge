@@ -33,6 +33,14 @@ class DecoderTests(unittest.TestCase):
 
 
 class StatusTests(unittest.TestCase):
+    def test_truncated_status_tlv_is_rejected_without_partial_decoding(self) -> None:
+        mac = bytes.fromhex("ff00ffffffff00ff")
+        body = protocol.tlv(0x0004, mac) + protocol.tlv(0x000B, b"\x01")
+        body += b"\x0a\x00\x05\x00\x01"
+
+        self.assertFalse(protocol.is_complete_tlv_body(body))
+        self.assertEqual(protocol.decode_tech_system_status(body, mac), {})
+
     def test_total_control_status(self) -> None:
         mac = bytes.fromhex("ff00ffffffff00ff")
         body = protocol.tlv(0x0004, mac)

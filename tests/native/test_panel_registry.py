@@ -49,29 +49,40 @@ async def test_load_migrates_v1_panels_without_resetting_identity(hass, hass_sto
 async def test_observed_absence_only_advances_during_active_valid_status_stream(hass):
     """Downtime, silent traffic, and reconnect gaps never count toward 30 days."""
     now = utc("2026-08-24T00:00:00")
-    registry = PanelRegistry(hass, "observed-absence", clock=lambda: now)
+    monotonic = [0.0]
+    registry = PanelRegistry(
+        hass,
+        "observed-absence",
+        clock=lambda: now,
+        monotonic_clock=lambda: monotonic[0],
+    )
     await registry.async_load()
     await registry.async_note_panel_report("ff00ffffffff01ff", "r0100", now)
 
     # The first verified status opens a monitored interval; it has no past time.
     await registry.async_note_status_stream(now)
     now += timedelta(days=5)
+    monotonic[0] += 5 * 86400
     await registry.async_note_status_stream(now)
     assert registry.records["ff00ffffffff01ff"].monitored_absence_seconds == 5 * 86400
 
     # Controller/HA downtime and malformed or stalled status traffic pause time.
     now += timedelta(days=7)
+    monotonic[0] += 7 * 86400
     await registry.async_pause_monitoring(now)
     now += timedelta(days=10)
+    monotonic[0] += 10 * 86400
     await registry.async_note_status_stream(now)
     assert registry.records["ff00ffffffff01ff"].monitored_absence_seconds == 5 * 86400
 
     now += timedelta(days=3)
+    monotonic[0] += 3 * 86400
     await registry.async_note_status_stream(now)
     assert registry.records["ff00ffffffff01ff"].monitored_absence_seconds == 8 * 86400
 
     # A new valid panel report is the only event that clears its accumulation.
     now += timedelta(hours=1)
+    monotonic[0] += 3600
     is_new = await registry.async_note_panel_report(
         "ff00ffffffff01ff", "r0100", now
     )
@@ -80,6 +91,61 @@ async def test_observed_absence_only_advances_during_active_valid_status_stream(
     assert record.monitored_absence_seconds == 0
     assert record.available
     assert record.last_report_utc == now
+
+
+async def test_observed_absence_uses_monotonic_time_when_wall_clock_changes(
+    hass,
+):
+    """Wall-clock corrections cannot manufacture observed panel absence."""
+    now = utc("2026-08-24T00:00:00")
+    monotonic = [100.0]
+    registry = PanelRegistry(
+        hass,
+        "monotonic-absence",
+        clock=lambda: now,
+        monotonic_clock=lambda: monotonic[0],
+        status_gap_timeout=60,
+    )
+    await registry.async_load()
+    await registry.async_note_panel_report("ff00ffffffff01ff", "r0100", now)
+    await registry.async_note_status_stream(now)
+
+    now += timedelta(days=31)
+    monotonic[0] += 1
+    await registry.async_note_status_stream(now)
+    assert registry.records["ff00ffffffff01ff"].monitored_absence_seconds == 1
+
+    now -= timedelta(days=1)
+    monotonic[0] += 1
+    await registry.async_note_status_stream(now)
+    now += timedelta(days=1)
+    monotonic[0] += 1
+    await registry.async_note_status_stream(now)
+    assert registry.records["ff00ffffffff01ff"].monitored_absence_seconds == 3
+
+
+async def test_observed_absence_rebaselines_after_monotonic_status_gap(hass):
+    """A status outage never gets backfilled by its first recovered report."""
+    now = utc("2026-08-24T00:00:00")
+    monotonic = [0.0]
+    registry = PanelRegistry(
+        hass,
+        "status-gap",
+        clock=lambda: now,
+        monotonic_clock=lambda: monotonic[0],
+        status_gap_timeout=10,
+    )
+    await registry.async_load()
+    await registry.async_note_panel_report("ff00ffffffff01ff", "r0100", now)
+    await registry.async_note_status_stream(now)
+
+    now += timedelta(days=31)
+    monotonic[0] += 31 * 86400
+    await registry.async_note_status_stream(now)
+
+    record = registry.records["ff00ffffffff01ff"]
+    assert record.monitored_absence_seconds == 0
+    assert record.checkpoint_utc == now
 
 
 async def test_pause_preserves_accumulation_and_report_restores_panel(hass):
@@ -102,6 +168,9 @@ async def test_pause_preserves_accumulation_and_report_restores_panel(hass):
     now += timedelta(days=20)
     await registry.async_note_status_stream(now)
     assert registry.records["ff00ffffffff01ff"].monitored_absence_seconds == before_pause
+
+    await registry.async_note_panel_report("ff00ffffffff01ff", "r0100", now)
+    assert registry.records["ff00ffffffff01ff"].available
 
 
 async def test_load_skips_bad_v2_records_without_losing_valid_panel(hass, hass_storage):

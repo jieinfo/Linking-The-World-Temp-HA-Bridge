@@ -63,6 +63,7 @@ from .protocol import (
     decode_tech_system_status,
     decode_text,
     decode_thermostat_status,
+    is_complete_tlv_body,
     iter_tlvs,
     parse_device_mac,
     preserve_valid_thermostat_measurements,
@@ -131,7 +132,11 @@ class LinkingTempHub:
         self.state = TechSystemState()
         self.thermostats: dict[str, ThermostatState] = {}
         self.room_names: dict[str, str] = {}
-        self.panel_registry = PanelRegistry(hass, entry.entry_id)
+        self.panel_registry = PanelRegistry(
+            hass,
+            entry.entry_id,
+            status_gap_timeout=self.controller_silence_timeout,
+        )
         self.filtered: dict[str, FilteredMeasurements] = {}
         self.health = health
         self.repairs = RepairManager(hass, entry)
@@ -153,6 +158,7 @@ class LinkingTempHub:
         self._session_authenticated = False
         self._reauth_required = False
         self._reauth_watcher: asyncio.Task[None] | None = None
+        self._last_valid_status_at: float | None = None
 
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
@@ -350,6 +356,7 @@ class LinkingTempHub:
                 await self.repairs.async_set_login_timeout(False)
                 await self.repairs.async_set_protocol_incompatible(False)
                 self.last_connection_error = "none"
+                self._last_valid_status_at = time.monotonic()
                 retry_delay = 5
                 self._notify()
                 await self._async_session_loop(client)
@@ -529,9 +536,14 @@ class LinkingTempHub:
         availability_at = 0.0
         while not self._stop.is_set() and client.reader_alive:
             now = time.monotonic()
-            if now - client.last_received_at >= self.controller_silence_timeout:
+            last_status_at = self._last_valid_status_at
+            if (
+                last_status_at is not None
+                and now - last_status_at >= self.controller_silence_timeout
+            ):
                 raise ConnectionError(
-                    f"MC7021 has been silent for {now - client.last_received_at:.0f} seconds"
+                    "MC7021 status stream has been silent for "
+                    f"{now - last_status_at:.0f} seconds"
                 )
             await self._async_poll_pending_status(now)
             await self._async_expire_pending(now)
@@ -540,7 +552,7 @@ class LinkingTempHub:
                 await client.heartbeat()
                 heartbeat_at = now + 15
             if now >= availability_at:
-                self._refresh_thermostat_availability(now)
+                await self._async_refresh_thermostat_availability(now)
                 availability_at = now + 15
             try:
                 await asyncio.wait_for(
@@ -557,6 +569,7 @@ class LinkingTempHub:
         self._mark_stage(ConnectionStage.DISCONNECTED)
         self.protocol_verified = False
         self.protocol_status = "disconnected"
+        self._last_valid_status_at = None
         if was_authenticated:
             self.health.increment("disconnects")
         if panel_registry := getattr(self, "panel_registry", None):
@@ -797,6 +810,9 @@ class LinkingTempHub:
     async def _async_frame_received(self, frame: YasHcpFrame) -> None:
         if frame.kind != 3 or frame.opcode != 8:
             return
+        if not is_complete_tlv_body(frame.body):
+            self.health.increment("ignored_statuses")
+            return
         room_id = ""
         changed = False
         for tag, value in iter_tlvs(frame.body):
@@ -813,6 +829,11 @@ class LinkingTempHub:
     async def _async_status_received(self, body: bytes) -> None:
         changed = False
         now_utc = datetime.now(UTC)
+        now_monotonic = time.monotonic()
+        if not is_complete_tlv_body(body):
+            self.health.increment("ignored_statuses")
+            await self.panel_registry.async_pause_monitoring(now_utc)
+            return
         total = decode_tech_system_status(body, self.tech_system_mac)
         if total:
             self.protocol_verified = True
@@ -832,19 +853,34 @@ class LinkingTempHub:
             )
         thermostat = decode_thermostat_status(body, self.tech_system_mac)
         valid_status = bool(total) or thermostat is not None
+        if valid_status:
+            previous_status_at = self._last_valid_status_at
+            status_is_contiguous = (
+                previous_status_at is None
+                or now_monotonic >= previous_status_at
+                and now_monotonic - previous_status_at <= self.controller_silence_timeout
+            )
+            self._last_valid_status_at = now_monotonic
         if (
             valid_status
             and self.connected
             and self.health.stage is ConnectionStage.READY
         ):
-            await self.panel_registry.async_note_status_stream(now_utc)
+            if not status_is_contiguous:
+                await self.panel_registry.async_pause_monitoring(now_utc)
+            await self.panel_registry.async_note_status_stream(
+                now_utc, now_monotonic=now_monotonic
+            )
         elif not valid_status:
             await self.panel_registry.async_pause_monitoring(now_utc)
         if thermostat is not None:
             mac_hex = thermostat.mac.hex()
             previous = self.thermostats.get(mac_hex)
             await self.panel_registry.async_note_panel_report(
-                mac_hex, thermostat.room_id, now_utc
+                mac_hex,
+                thermostat.room_id,
+                now_utc,
+                now_monotonic=now_monotonic,
             )
             reported_temperature = thermostat.current_temperature
             reported_humidity = thermostat.humidity
@@ -893,7 +929,7 @@ class LinkingTempHub:
         if values.humidity is None or abs(humidity - values.humidity) >= 2:
             values.humidity = humidity
 
-    def _refresh_thermostat_availability(self, now: float) -> None:
+    async def _async_refresh_thermostat_availability(self, now: float) -> None:
         if self.thermostat_offline_after == 0:
             return
         changed = False
@@ -903,6 +939,9 @@ class LinkingTempHub:
                 and now - thermostat.last_seen >= self.thermostat_offline_after
             ):
                 thermostat.available = False
+                await self.panel_registry.async_set_panel_available(
+                    thermostat.mac.hex(), False
+                )
                 changed = True
         if changed:
             self._notify()

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from math import isfinite
+import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
@@ -108,12 +109,17 @@ class PanelRegistry:
         entry_id: str,
         *,
         clock: Callable[[], datetime] | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
+        status_gap_timeout: float | None = None,
     ) -> None:
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._monotonic_clock = monotonic_clock or time.monotonic
+        self._status_gap_timeout = status_gap_timeout
         self._store = _PanelStore(hass, f"{DOMAIN}.{entry_id}.panels", self._clock)
         self.records: dict[str, PanelRecord] = {}
         self.room_names: dict[str, str] = {}
         self._monitoring_active = False
+        self._checkpoint_monotonic: float | None = None
 
     async def async_load(self) -> None:
         """Restore valid v2 records, isolating individual damaged records."""
@@ -135,29 +141,43 @@ class PanelRegistry:
             if record is not None:
                 self.records[record.mac_hex] = record
 
-    async def async_note_status_stream(self, now_utc: datetime) -> None:
+    async def async_note_status_stream(
+        self, now_utc: datetime, *, now_monotonic: float | None = None
+    ) -> None:
         """Advance absence only across contiguous, valid controller status traffic."""
         now_utc = _utc(now_utc)
+        monotonic_now = self._monotonic(now_monotonic)
         if not self._monitoring_active:
-            self._monitoring_active = True
-            for record in self.records.values():
-                record.checkpoint_utc = now_utc
-            self._schedule_save()
+            self._start_monitoring(now_utc, monotonic_now)
             return
-        self._advance_observed(now_utc)
+        if self._must_rebaseline(monotonic_now):
+            await self.async_pause_monitoring(now_utc)
+            self._start_monitoring(now_utc, monotonic_now)
+            return
+        self._advance_observed(now_utc, monotonic_now)
 
     async def async_note_panel_report(
-        self, mac_hex: str, room_id: str, now_utc: datetime
+        self,
+        mac_hex: str,
+        room_id: str,
+        now_utc: datetime,
+        *,
+        now_monotonic: float | None = None,
     ) -> bool:
         """Record a fresh valid panel report and return whether it is new."""
         now_utc = _utc(now_utc)
+        monotonic_now = self._monotonic(now_monotonic)
         normalized_mac = _normalize_mac(mac_hex)
         if normalized_mac is None:
             raise ValueError("Panel MAC must contain 16 hexadecimal characters")
         if not isinstance(room_id, str):
             raise ValueError("Panel room ID must be a string")
         if self._monitoring_active:
-            self._advance_observed(now_utc)
+            if self._must_rebaseline(monotonic_now):
+                await self.async_pause_monitoring(now_utc)
+                self._start_monitoring(now_utc, monotonic_now)
+            else:
+                self._advance_observed(now_utc, monotonic_now)
         record = self.records.get(normalized_mac)
         is_new = record is None
         if record is None:
@@ -185,6 +205,7 @@ class PanelRegistry:
         _utc(now_utc)
         changed = self._monitoring_active
         self._monitoring_active = False
+        self._checkpoint_monotonic = None
         for record in self.records.values():
             if record.available or record.checkpoint_utc is not None:
                 changed = True
@@ -192,6 +213,18 @@ class PanelRegistry:
             record.checkpoint_utc = None
         if changed:
             self._schedule_save()
+
+    async def async_set_panel_available(self, mac_hex: str, available: bool) -> bool:
+        """Persist one panel's short-term availability without changing absence facts."""
+        normalized_mac = _normalize_mac(mac_hex)
+        if normalized_mac is None:
+            raise ValueError("Panel MAC must contain 16 hexadecimal characters")
+        record = self.records.get(normalized_mac)
+        if record is None or record.available is available:
+            return False
+        record.available = available
+        self._schedule_save()
+        return True
 
     async def async_set_room_name(self, room_id: str, name: str) -> bool:
         """Persist room metadata without altering any panel identity."""
@@ -215,18 +248,44 @@ class PanelRegistry:
         self._schedule_save()
 
     @callback
-    def _advance_observed(self, now_utc: datetime) -> None:
+    def _advance_observed(self, now_utc: datetime, monotonic_now: float) -> None:
         changed = False
+        checkpoint = self._checkpoint_monotonic
+        elapsed = 0.0 if checkpoint is None else monotonic_now - checkpoint
+        if elapsed < 0:
+            elapsed = 0.0
         for record in self.records.values():
-            checkpoint = record.checkpoint_utc
-            if checkpoint is not None and now_utc >= checkpoint:
-                elapsed = (now_utc - checkpoint).total_seconds()
-                if elapsed:
-                    record.monitored_absence_seconds += elapsed
-                    changed = True
+            if elapsed:
+                record.monitored_absence_seconds += elapsed
+                changed = True
             record.checkpoint_utc = now_utc
+        self._checkpoint_monotonic = monotonic_now
         if changed:
             self._schedule_save()
+
+    def _must_rebaseline(self, monotonic_now: float) -> bool:
+        """A restart, clock regression, or broken status continuity starts a new interval."""
+        checkpoint = self._checkpoint_monotonic
+        if not self._monitoring_active or checkpoint is None or monotonic_now < checkpoint:
+            return True
+        return (
+            self._status_gap_timeout is not None
+            and monotonic_now - checkpoint > self._status_gap_timeout
+        )
+
+    def _start_monitoring(self, now_utc: datetime, monotonic_now: float) -> None:
+        """Establish an in-process baseline; UTC exists only for persisted diagnostics."""
+        self._monitoring_active = True
+        self._checkpoint_monotonic = monotonic_now
+        for record in self.records.values():
+            record.checkpoint_utc = now_utc
+        self._schedule_save()
+
+    def _monotonic(self, value: float | None) -> float:
+        monotonic_now = self._monotonic_clock() if value is None else value
+        if not isinstance(monotonic_now, (int, float)) or not isfinite(monotonic_now):
+            raise ValueError("Panel registry monotonic clock must return a finite number")
+        return float(monotonic_now)
 
     @callback
     def _schedule_save(self) -> None:

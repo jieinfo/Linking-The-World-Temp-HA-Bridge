@@ -249,7 +249,23 @@ def iter_tlvs(data: bytes):
         offset += length
 
 
+def is_complete_tlv_body(data: bytes) -> bool:
+    """Return whether *all* bytes form complete TLVs without a trailing fragment."""
+    offset = 0
+    while offset < len(data):
+        if len(data) - offset < 4:
+            return False
+        _tag, length = struct.unpack_from("<HH", data, offset)
+        offset += 4
+        if length > len(data) - offset:
+            return False
+        offset += length
+    return True
+
+
 def parse_tlvs(data: bytes) -> dict[int, bytes]:
+    if not is_complete_tlv_body(data):
+        return {}
     return dict(iter_tlvs(data))
 
 

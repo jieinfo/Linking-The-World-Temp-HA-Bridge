@@ -59,3 +59,40 @@
 - `git diff --check`: clean.
 - Process check after verification: no residual pytest process; the only matched
   process was the inspection shell itself.
+
+## Review Fix Round 1
+
+- Observed absence now uses an injected process-local monotonic clock. UTC values
+  remain persisted as first/last/checkpoint display metadata only; a restarted
+  process deliberately has no monotonic checkpoint, so its first valid status
+  establishes a fresh baseline without backfilling downtime.
+- The hub tracks the last valid controller status separately from generic TCP
+  traffic. A status gap beyond `controller_silence_timeout` pauses the registry;
+  the recovery status creates a new baseline rather than adding the stalled
+  interval. The registry independently applies the same monotonic gap defense.
+- Added strict whole-body TLV validation. A legal prefix followed by a truncated
+  TLV tail is malformed: no controller state is partially applied and observed
+  absence monitoring is paused.
+- Short-term thermostat expiry now updates both the entity-facing thermostat
+  mirror and the persisted `PanelRecord.available` field. A valid panel report
+  restores the record to available; disconnect pauses retain the same mirror
+  consistency.
+- Delayed store saves remain debounced, and `async_stop()` still flushes the
+  latest payload before unload.
+
+### TDD Evidence
+
+1. Added clock-jump, monotonic-gap, strict-truncated-TLV, valid-status-gap, and
+   persisted availability tests first. The initial focused run failed with the
+   expected missing monotonic constructor/helper/async availability APIs and a
+   partially applied `power=ON` state.
+2. Implemented the monotonic baselines, strict protocol gate, separate status
+   continuity tracker, and synchronized availability persistence. The focused
+   regression suite then passed.
+
+### Fix Verification
+
+- `.venv-313/bin/python -m pytest -q tests/native/test_panel_registry.py tests/native/test_setup.py tests/native/test_entities.py -k 'panel or restore or discovery or offline'`: `10 passed, 16 deselected in 0.20s`.
+- `.venv-313/bin/python -m pytest tests/native -q`: `100 passed in 0.89s`.
+- `.venv-313/bin/python -m compileall -q custom_components/linking_the_world_temp_ha tests/native`: passed.
+- `git diff --check`: clean.
