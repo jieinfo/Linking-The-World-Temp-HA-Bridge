@@ -172,10 +172,15 @@ class FakeMC7021Server:
         delay = self.behavior.delay_for(stage)
         if delay:
             await asyncio.sleep(delay)
-        if isinstance(reply, YasHcpFrame):
-            await self.async_send_frames(replace(reply, sequence=request.sequence))
-        elif isinstance(reply, bytes):
-            await self._async_write(reply)
+        try:
+            if isinstance(reply, YasHcpFrame):
+                await self.async_send_frames(replace(reply, sequence=request.sequence))
+            elif isinstance(reply, bytes):
+                await self._async_write(reply)
+        except RuntimeError as error:
+            if error.args != ("No MC7021 client is connected",):
+                raise
+            return
         if self.behavior.close_after_stage == stage:
             await self.async_close_client()
 
