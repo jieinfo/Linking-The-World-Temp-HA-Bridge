@@ -21,7 +21,9 @@ async def async_setup_entry(
     """Set up one MC7021 controller."""
     health = HealthTracker()
     hub = LinkingTempHub(hass, entry, health)
-    runtime = LinkingTempRuntime(hub=hub, health=health)
+    runtime = LinkingTempRuntime(
+        hub=hub, health=health, panel_registry=hub.panel_registry
+    )
     await hub.async_start()
     runtime_assigned = False
     try:

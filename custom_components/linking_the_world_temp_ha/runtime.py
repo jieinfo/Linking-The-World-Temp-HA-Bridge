@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 if TYPE_CHECKING:
     from .health import HealthTracker
     from .hub import LinkingTempHub
+    from .panel_registry import PanelRegistry
 
 
 class ConnectionStage(StrEnum):
@@ -42,6 +43,7 @@ class LinkingTempRuntime:
 
     hub: LinkingTempHub
     health: HealthTracker
+    panel_registry: PanelRegistry
 
 
 LinkingTempConfigEntry: TypeAlias = ConfigEntry[LinkingTempRuntime]

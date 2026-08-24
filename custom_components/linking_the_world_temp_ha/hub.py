@@ -9,12 +9,11 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from datetime import UTC, datetime
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.storage import Store
 
 from .command_queue import (
     STATUS_POLL_INTERVAL,
@@ -69,6 +68,7 @@ from .protocol import (
     preserve_valid_thermostat_measurements,
 )
 from .health import HealthTracker
+from .panel_registry import PanelRegistry
 from .runtime import ConnectionStage, FailureKind
 from .repairs import RepairManager
 from .thermostat_policy import room_thermostat_block_reason
@@ -131,6 +131,7 @@ class LinkingTempHub:
         self.state = TechSystemState()
         self.thermostats: dict[str, ThermostatState] = {}
         self.room_names: dict[str, str] = {}
+        self.panel_registry = PanelRegistry(hass, entry.entry_id)
         self.filtered: dict[str, FilteredMeasurements] = {}
         self.health = health
         self.repairs = RepairManager(hass, entry)
@@ -148,9 +149,6 @@ class LinkingTempHub:
         self._last_command_at: float | None = None
         self._pending: dict[str, PendingCommand] = {}
         self._queued: dict[str, QueuedCommand] = {}
-        self._store: Store[dict[str, Any]] = Store(
-            hass, 1, f"{DOMAIN}.{entry.entry_id}.panels"
-        )
         self._has_attempted_connection = False
         self._session_authenticated = False
         self._reauth_required = False
@@ -159,6 +157,7 @@ class LinkingTempHub:
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
         await self._async_restore_panels()
+        await self.panel_registry.async_pause_monitoring(datetime.now(UTC))
         self._runner = self.entry.async_create_background_task(
             self.hass,
             self._async_run(),
@@ -181,6 +180,7 @@ class LinkingTempHub:
                 pass
             self._runner = None
         await self._async_disconnect()
+        await self.panel_registry.async_flush()
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -459,6 +459,8 @@ class LinkingTempHub:
     async def _async_parser_event(self, name: str, count: int) -> None:
         """Record decoder counters only; raw protocol data stays in the client."""
         self.health.increment(name, count)
+        if name == "frames_malformed":
+            await self.panel_registry.async_pause_monitoring(datetime.now(UTC))
 
     def _increment_health(self, name: str, count: int = 1) -> None:
         """Keep focused compatibility tests independent from runtime construction."""
@@ -557,6 +559,8 @@ class LinkingTempHub:
         self.protocol_status = "disconnected"
         if was_authenticated:
             self.health.increment("disconnects")
+        if panel_registry := getattr(self, "panel_registry", None):
+            await panel_registry.async_pause_monitoring(datetime.now(UTC))
         for thermostat in self.thermostats.values():
             thermostat.available = False
         self.filtered.clear()
@@ -800,15 +804,15 @@ class LinkingTempHub:
                 room_id = decode_text(value)
             elif tag == 0x0036 and room_id:
                 name = decode_text(value)
-                if self.room_names.get(room_id) != name:
+                if await self.panel_registry.async_set_room_name(room_id, name):
                     self.room_names[room_id] = name
                     changed = True
         if changed:
-            await self._async_save_panels()
             self._notify()
 
     async def _async_status_received(self, body: bytes) -> None:
         changed = False
+        now_utc = datetime.now(UTC)
         total = decode_tech_system_status(body, self.tech_system_mac)
         if total:
             self.protocol_verified = True
@@ -827,10 +831,21 @@ class LinkingTempHub:
                 },
             )
         thermostat = decode_thermostat_status(body, self.tech_system_mac)
+        valid_status = bool(total) or thermostat is not None
+        if (
+            valid_status
+            and self.connected
+            and self.health.stage is ConnectionStage.READY
+        ):
+            await self.panel_registry.async_note_status_stream(now_utc)
+        elif not valid_status:
+            await self.panel_registry.async_pause_monitoring(now_utc)
         if thermostat is not None:
             mac_hex = thermostat.mac.hex()
             previous = self.thermostats.get(mac_hex)
-            is_new = previous is None
+            await self.panel_registry.async_note_panel_report(
+                mac_hex, thermostat.room_id, now_utc
+            )
             reported_temperature = thermostat.current_temperature
             reported_humidity = thermostat.humidity
             measurements_valid = preserve_valid_thermostat_measurements(
@@ -856,8 +871,6 @@ class LinkingTempHub:
                 },
             )
             changed = True
-            if is_new:
-                await self._async_save_panels()
         if not total and thermostat is None:
             self.health.increment("ignored_statuses")
         if total or changed:
@@ -895,26 +908,12 @@ class LinkingTempHub:
             self._notify()
 
     async def _async_restore_panels(self) -> None:
-        stored = await self._store.async_load() or {}
-        self.room_names.update(stored.get("rooms", {}))
-        for item in stored.get("panels", []):
-            try:
-                mac = parse_device_mac(item["mac"])
-            except (KeyError, ValueError):
-                continue
+        await self.panel_registry.async_load()
+        self.room_names.update(self.panel_registry.room_names)
+        for record in self.panel_registry.records.values():
+            mac = parse_device_mac(record.mac_hex)
             self.thermostats[mac.hex()] = ThermostatState(
                 mac=mac,
-                room_id=item.get("room_id", ""),
+                room_id=record.room_id,
                 available=False,
             )
-
-    async def _async_save_panels(self) -> None:
-        await self._store.async_save(
-            {
-                "rooms": self.room_names,
-                "panels": [
-                    {"mac": thermostat.mac.hex(), "room_id": thermostat.room_id}
-                    for thermostat in self.thermostats.values()
-                ],
-            }
-        )

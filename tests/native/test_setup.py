@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.helpers import entity_registry as er
 
 from custom_components.linking_the_world_temp_ha.binary_sensor import (
     ControllerConnectionSensor,
@@ -56,6 +57,41 @@ async def test_setup_uses_typed_runtime_data_and_never_stores_hub_in_hass_data(
     assert mock_config_entry.entry_id not in hass.data.get(DOMAIN, {})
 
 
+async def test_setup_restores_v1_panel_identity_through_runtime_registry(
+    hass, hass_storage, mock_config_entry
+):
+    """Legacy panels remain discoverable with their exact existing unique IDs."""
+    key = f"{DOMAIN}.{mock_config_entry.entry_id}.panels"
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {
+            "rooms": {"r0100": "客餐厅"},
+            "panels": [{"mac": "ff00ffffffff01ff", "room_id": "r0100"}],
+        },
+    }
+    mock_config_entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    runtime = mock_config_entry.runtime_data
+    assert runtime.panel_registry.records["ff00ffffffff01ff"].room_id == "r0100"
+    assert runtime.hub.room_names["r0100"] == "客餐厅"
+    assert "ff00ffffffff01ff" in runtime.hub.thermostats
+
+    entries = [
+        entity
+        for entity in er.async_entries_for_config_entry(
+            er.async_get(hass), mock_config_entry.entry_id
+        )
+        if entity.unique_id
+        == f"{mock_config_entry.entry_id}_thermostat_ff00ffffffff01ff_climate"
+    ]
+    assert len(entries) == 1
+
+
 async def test_setup_stops_hub_when_platform_forward_fails(
     hass, mock_config_entry, monkeypatch
 ):
@@ -68,6 +104,7 @@ async def test_setup_stops_hub_when_platform_forward_fails(
         def __init__(self, _hass, _entry, _health) -> None:
             self.started = False
             self.stopped = False
+            self.panel_registry = object()
             TrackingHub.instance = self
 
         async def async_start(self) -> None:
@@ -104,6 +141,7 @@ async def test_setup_cancellation_stops_hub_before_propagating(
         def __init__(self, _hass, _entry, _health) -> None:
             self.started = False
             self.stopped = False
+            self.panel_registry = object()
             TrackingHub.instance = self
 
         async def async_start(self) -> None:
@@ -139,6 +177,7 @@ async def test_setup_stops_hub_when_runtime_assignment_fails(hass, monkeypatch):
 
         def __init__(self, _hass, _entry, _health) -> None:
             self.stopped = False
+            self.panel_registry = object()
             TrackingHub.instance = self
 
         async def async_start(self) -> None:
