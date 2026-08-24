@@ -46,7 +46,8 @@
     },
     "abort": {
       "already_configured": "This controller is already configured",
-      "reauth_successful": "The local controller credentials were updated"
+      "reauth_successful": "The local controller credentials were updated",
+      "reconfigure_successful": "The local controller configuration was updated"
     }
   },
   "options": {

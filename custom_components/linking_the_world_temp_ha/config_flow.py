@@ -11,6 +11,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
@@ -136,12 +137,21 @@ def _connection_error_key(error: BaseException) -> str | None:
     return None
 
 
-def _reauth_schema(defaults: Mapping[str, Any]) -> vol.Schema:
+def _reauth_schema(
+    defaults: Mapping[str, Any], *, include_submitted_password: bool = False
+) -> vol.Schema:
     """Reauthentication deliberately exposes credentials only."""
     return vol.Schema(
         {
             vol.Required(CONF_USERNAME, default=defaults.get(CONF_USERNAME, "")): cv.string,
-            vol.Required(CONF_PASSWORD, default=""): cv.string,
+            vol.Required(
+                CONF_PASSWORD,
+                default=(
+                    defaults.get(CONF_PASSWORD, "")
+                    if include_submitted_password
+                    else ""
+                ),
+            ): cv.string,
         }
     )
 
@@ -150,6 +160,29 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle native integration setup."""
 
     VERSION = 1
+
+    @callback
+    def _async_update_entry_and_abort(
+        self,
+        entry: config_entries.ConfigEntry,
+        *,
+        data_updates: Mapping[str, Any],
+        reason: str,
+        unique_id: str | None = None,
+        title: str | None = None,
+    ) -> ConfigFlowResult:
+        """Update once and let the entry update listener schedule its reload.
+
+        Home Assistant 2026.8 disallows combining an entry update listener with
+        ``async_update_reload_and_abort`` because both paths schedule reloads.
+        """
+        self.hass.config_entries.async_update_entry(
+            entry,
+            data={**dict(entry.data), **data_updates},
+            **({"unique_id": unique_id} if unique_id is not None else {}),
+            **({"title": title} if title is not None else {}),
+        )
+        return self.async_abort(reason=reason)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -210,8 +243,9 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 if existing is not None and existing.entry_id != entry.entry_id:
                     return self.async_abort(reason="already_configured")
-                return self.async_update_reload_and_abort(
+                return self._async_update_entry_and_abort(
                     entry,
+                    reason="reconfigure_successful",
                     title=f"Linking The World Temp HA ({normalized[CONF_HOST]})",
                     unique_id=unique_id,
                     data_updates=normalized,
@@ -247,8 +281,9 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 await self.async_set_unique_id(entry.unique_id)
                 self._abort_if_unique_id_mismatch()
-                return self.async_update_reload_and_abort(
+                return self._async_update_entry_and_abort(
                     entry,
+                    reason="reauth_successful",
                     data_updates={
                         CONF_USERNAME: user_input[CONF_USERNAME],
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
@@ -256,7 +291,10 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=_reauth_schema({**dict(entry.data), **(user_input or {})}),
+            data_schema=_reauth_schema(
+                {**dict(entry.data), **(user_input or {})},
+                include_submitted_password=user_input is not None,
+            ),
             errors=errors,
         )
 

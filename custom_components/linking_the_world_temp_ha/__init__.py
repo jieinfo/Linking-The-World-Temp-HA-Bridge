@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from .const import PLATFORMS
 from .health import HealthTracker
 from .hub import LinkingTempHub
+from .repairs import async_delete_connection_issues
 from .runtime import LinkingTempConfigEntry, LinkingTempRuntime
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,6 +51,13 @@ async def async_unload_entry(
         return False
     await entry.runtime_data.hub.async_stop()
     return True
+
+
+async def async_remove_entry(
+    hass: HomeAssistant, entry: LinkingTempConfigEntry
+) -> None:
+    """Clean up Repairs that otherwise outlive a removed config entry."""
+    async_delete_connection_issues(hass, entry.entry_id)
 
 
 async def _async_reload_entry(

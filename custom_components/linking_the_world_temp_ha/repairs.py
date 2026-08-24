@@ -13,6 +13,12 @@ from homeassistant.helpers import issue_registry as ir
 from .const import DOMAIN
 
 
+def async_delete_connection_issues(hass: HomeAssistant, entry_id: str) -> None:
+    """Remove every entry-scoped connection Repair during config-entry removal."""
+    for issue_type in ("login_timeout", "protocol_incompatible"):
+        ir.async_delete_issue(hass, DOMAIN, f"{issue_type}_{entry_id}")
+
+
 class RepairManager:
     """Deduplicate and clear connection Repairs for one config entry."""
 

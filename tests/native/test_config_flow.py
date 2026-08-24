@@ -246,3 +246,47 @@ async def test_reauth_rejection_keeps_existing_credentials_and_shows_error(
     assert result["type"] == "form"
     assert result["errors"] == {"base": "invalid_auth"}
     assert dict(mock_config_entry.data) == original
+
+    defaults = {
+        key.schema: key.default()
+        for key in result["data_schema"].schema
+    }
+    assert defaults == {"username": "wrong", "password": "wrong"}
+
+
+async def test_reauth_updates_once_and_uses_the_entry_update_listener(
+    hass, mock_config_entry, monkeypatch
+) -> None:
+    """A real reauth flow updates once; the registered listener owns reload."""
+    import custom_components.linking_the_world_temp_ha.config_flow as config_flow
+
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        unique_id=f"{mock_config_entry.data['host']}:{mock_config_entry.data['port']}",
+    )
+    updates: list[object] = []
+
+    async def update_listener(_hass, entry) -> None:
+        updates.append(entry)
+
+    mock_config_entry.add_update_listener(update_listener)
+
+    async def validate(_data) -> None:
+        return None
+
+    monkeypatch.setattr(config_flow, "_async_validate_connection", validate)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reauth", "entry_id": mock_config_entry.entry_id},
+        data=dict(mock_config_entry.data),
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={"username": "new-admin", "password": "new-secret"},
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "reauth_successful"
+    assert updates == [mock_config_entry]

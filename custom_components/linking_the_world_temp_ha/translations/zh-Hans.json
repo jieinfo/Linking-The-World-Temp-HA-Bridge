@@ -46,7 +46,8 @@
     },
     "abort": {
       "already_configured": "这台主机已经配置",
-      "reauth_successful": "本地主机凭据已更新"
+      "reauth_successful": "本地主机凭据已更新",
+      "reconfigure_successful": "本地主机配置已更新"
     }
   },
   "options": {

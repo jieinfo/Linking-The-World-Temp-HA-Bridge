@@ -75,6 +75,10 @@ from .thermostat_policy import room_thermostat_block_reason
 
 _LOGGER = logging.getLogger(__name__)
 
+REAUTH_FLOW_WATCH_INTERVAL = 1.0
+_FLOW_SOURCE_REAUTH = "reauth"
+_FLOW_SOURCE_RECONFIGURE = "reconfigure"
+
 
 @dataclass
 class FilteredMeasurements:
@@ -150,6 +154,7 @@ class LinkingTempHub:
         self._has_attempted_connection = False
         self._session_authenticated = False
         self._reauth_required = False
+        self._reauth_watcher: asyncio.Task[None] | None = None
 
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
@@ -163,6 +168,11 @@ class LinkingTempHub:
     async def async_stop(self) -> None:
         """Stop the session and mark all state unavailable."""
         self._stop.set()
+        watcher = self._reauth_watcher
+        self._reauth_watcher = None
+        if watcher is not None and watcher is not asyncio.current_task():
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
         if self._runner is not None:
             self._runner.cancel()
             try:
@@ -355,7 +365,7 @@ class LinkingTempHub:
                 _LOGGER.warning(
                     "MC7021 rejected the configured credentials; reauthentication is required"
                 )
-                self.entry.async_start_reauth(self.hass)
+                self._async_request_reauth()
             except (CannotConnect, ConnectionError, OSError, TimeoutError) as error:
                 self._record_connection_failure(error)
                 self.last_connection_error = str(error) or error.__class__.__name__
@@ -373,6 +383,66 @@ class LinkingTempHub:
             except asyncio.TimeoutError:
                 pass
             retry_delay = min(30, retry_delay * 2)
+
+    def _async_request_reauth(self) -> None:
+        """Start reauth now, or wait quietly for a conflicting flow to finish."""
+        flows = tuple(
+            self.entry.async_get_active_flows(
+                self.hass, {_FLOW_SOURCE_REAUTH, _FLOW_SOURCE_RECONFIGURE}
+            )
+        )
+        if any(
+            flow["context"].get("source") == _FLOW_SOURCE_REAUTH for flow in flows
+        ):
+            return
+        if not flows:
+            self.entry.async_start_reauth(self.hass)
+            return
+        if self._reauth_watcher is None or self._reauth_watcher.done():
+            self._reauth_watcher = self.entry.async_create_background_task(
+                self.hass,
+                self._async_wait_for_reauth_slot(),
+                f"{DOMAIN}_{self.entry.entry_id}_reauth_waiter",
+            )
+
+    async def _async_wait_for_reauth_slot(self) -> None:
+        """Wait at a low rate for an existing reconfigure flow to end.
+
+        Config-entry flows expose no completion callback.  This task only exists
+        while a rejected session is paused, performs no network I/O, and is
+        owned by the entry so unload reliably cancels it.
+        """
+        try:
+            while self._reauth_required and not self._stop.is_set():
+                flows = tuple(
+                    self.entry.async_get_active_flows(
+                        self.hass, {_FLOW_SOURCE_REAUTH, _FLOW_SOURCE_RECONFIGURE}
+                    )
+                )
+                if any(
+                    flow["context"].get("source") == _FLOW_SOURCE_REAUTH
+                    for flow in flows
+                ):
+                    return
+                if not flows:
+                    self.entry.async_start_reauth(self.hass)
+                    await asyncio.sleep(0)
+                    if any(
+                        flow["context"].get("source") == _FLOW_SOURCE_REAUTH
+                        for flow in self.entry.async_get_active_flows(
+                            self.hass,
+                            {_FLOW_SOURCE_REAUTH, _FLOW_SOURCE_RECONFIGURE},
+                        )
+                    ):
+                        return
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), REAUTH_FLOW_WATCH_INTERVAL
+                    )
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            self._reauth_watcher = None
 
     async def _async_protocol_stage_received(self, stage: str) -> None:
         """Reflect protocol lifecycle callbacks in the shared health runtime."""
