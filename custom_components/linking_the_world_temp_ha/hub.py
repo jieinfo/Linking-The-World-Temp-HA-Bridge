@@ -871,12 +871,13 @@ class LinkingTempHub:
             await self.panel_registry.async_note_status_stream(
                 now_utc, now_monotonic=now_monotonic
             )
+            await self.async_sync_stale_panel_repairs()
         elif not valid_status:
             await self.panel_registry.async_pause_monitoring(now_utc)
         if thermostat is not None:
             mac_hex = thermostat.mac.hex()
             previous = self.thermostats.get(mac_hex)
-            await self.panel_registry.async_note_panel_report(
+            await self.async_note_panel_report(
                 mac_hex,
                 thermostat.room_id,
                 now_utc,
@@ -911,6 +912,36 @@ class LinkingTempHub:
             self.health.increment("ignored_statuses")
         if total or changed:
             self._notify()
+
+    async def async_sync_stale_panel_repairs(self) -> None:
+        """Expose each observed-thirty-day absence as one actionable Repair."""
+        for mac_hex in self.panel_registry.stale_macs:
+            record = self.panel_registry.records.get(mac_hex)
+            if record is not None:
+                await self.repairs.async_set_stale_panel(
+                    record, self.panel_registry.room_names.get(record.room_id)
+                )
+
+    async def async_note_panel_report(
+        self,
+        mac_hex: str,
+        room_id: str,
+        now_utc: datetime,
+        *,
+        now_monotonic: float | None = None,
+    ) -> bool:
+        """Record a panel report and resolve its stale Repair, if any."""
+        is_new = await self.panel_registry.async_note_panel_report(
+            mac_hex, room_id, now_utc, now_monotonic=now_monotonic
+        )
+        await self.repairs.async_clear_stale_panel(mac_hex)
+        return is_new
+
+    async def async_forget_panel(self, mac_hex: str) -> None:
+        """Remove a user-deleted panel from runtime state after registry cleanup."""
+        await self.panel_registry.async_delete_panel(mac_hex)
+        self.thermostats.pop(mac_hex, None)
+        self.filtered.pop(mac_hex, None)
 
     def _update_filtered(self, thermostat: ThermostatState) -> None:
         if thermostat.current_temperature is None or thermostat.humidity is None:

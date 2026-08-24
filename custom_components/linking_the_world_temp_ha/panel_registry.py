@@ -247,6 +247,15 @@ class PanelRegistry:
             return
         self._schedule_save()
 
+    @property
+    def stale_macs(self) -> tuple[str, ...]:
+        """Return panels with enough continuously observed absence for a Repair."""
+        return tuple(
+            mac_hex
+            for mac_hex, record in self.records.items()
+            if record.monitored_absence_seconds >= STALE_PANEL_SECONDS
+        )
+
     @callback
     def _advance_observed(self, now_utc: datetime, monotonic_now: float) -> None:
         changed = False

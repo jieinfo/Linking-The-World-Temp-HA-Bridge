@@ -114,6 +114,18 @@
 - Accepted P2: a TLV stream with a valid prefix and truncated tail is accepted as valid status; whole-body TLV integrity must gate accounting and state mutation.
 - Accepted P2: short-term offline expiry updates only the hub thermostat mirror, leaving persisted `PanelRecord.available` true.
 - Fix round 1 dispatched with clock-jump, status-gap, truncated-TLV, and mirror-consistency regression tests.
+- Fix commit: `ee51966 fix: harden observed panel lifecycle`.
+- Verification: 10 focused Task 5 tests and 100 complete native tests passed.
+- Scoped re-review: PASS; monotonic duration, status continuity, whole-body TLV validation, and availability persistence are closed.
+- Task 5: complete.
+- Task 6: complete.
+  - Added exact 30-day stale-panel Repairs with explicit confirmation and
+    report-driven automatic recovery.
+  - Safe cleanup selects only this config entry's stable panel entity prefix,
+    retains devices with unrelated references, deletes persisted source state
+    last, and reloads a loaded entry so rediscovery remains duplicate-free.
+  - Entry removal now also clears stale-panel Repairs; diagnostics redact
+    identities to anonymous panel/room labels.
 - Fix round 1: observed absence now uses an injected in-process monotonic
   clock; persisted UTC checkpoints are display-only and cannot backfill after a
   restart or wall-clock correction. The hub tracks last valid status separately

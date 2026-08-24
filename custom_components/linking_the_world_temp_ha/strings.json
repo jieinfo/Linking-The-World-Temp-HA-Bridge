@@ -92,6 +92,23 @@
         },
         "abort": {"entry_not_found": "找不到关联的配置项"}
       }
+    },
+    "stale_panel": {
+      "title": "房间温控面板已 30 天未上报",
+      "description": "{room}（{short_mac}）自 {last_report} 起未发送有效上报。确认删除只会移除此集成拥有的面板实体和保存的面板记录；取消不会改变任何数据。",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "删除长期未上报的房间温控面板",
+            "description": "此操作仅从本集成移除该面板，不会删除 Home Assistant 自动化。相同面板以后重新上报时会被再次发现。",
+            "data": {}
+          }
+        },
+        "abort": {
+          "entry_not_found": "找不到关联的配置项",
+          "entry_not_loaded": "关联的集成当前未加载"
+        }
+      }
     }
   },
   "entity": {

@@ -3,18 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 from custom_components.linking_the_world_temp_ha.const import DOMAIN
+from custom_components.linking_the_world_temp_ha.diagnostics import (
+    async_get_config_entry_diagnostics,
+)
 from custom_components.linking_the_world_temp_ha.repairs import (
     RepairManager,
     async_create_fix_flow,
 )
+from custom_components.linking_the_world_temp_ha.panel_registry import (
+    STALE_PANEL_SECONDS,
+    PanelRecord,
+    PanelRegistry,
+)
 from custom_components.linking_the_world_temp_ha.protocol import (
     AuthenticationRejected,
     TcpConnectError,
+    ThermostatState,
 )
 from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from custom_components.linking_the_world_temp_ha.health import HealthTracker
@@ -24,6 +38,313 @@ pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
 def _issue(hass, issue_id: str):
     return ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+
+
+def _stale_issue_id(entry_id: str, mac_hex: str) -> str:
+    return f"stale_panel_{entry_id}_{mac_hex}"
+
+
+def _panel_unique_id_prefix(entry_id: str, mac_hex: str) -> str:
+    return f"{entry_id}_thermostat_{mac_hex}_"
+
+
+def _utc(value: str) -> datetime:
+    return datetime.fromisoformat(value).replace(tzinfo=UTC)
+
+
+async def _make_stale_hub(hass, mock_config_entry):
+    """Create one hub with a panel exactly at the observed-absence threshold."""
+    now = _utc("2026-08-24T00:00:00")
+    monotonic = [0.0]
+    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
+    hub.panel_registry = PanelRegistry(
+        hass,
+        mock_config_entry.entry_id,
+        clock=lambda: now,
+        monotonic_clock=lambda: monotonic[0],
+    )
+    await hub.panel_registry.async_load()
+    await hub.panel_registry.async_note_panel_report(
+        "ff00ffffffff01ff", "r0100", now
+    )
+    await hub.panel_registry.async_set_room_name("r0100", "客餐厅")
+    await hub.panel_registry.async_note_status_stream(now)
+    now += timedelta(seconds=STALE_PANEL_SECONDS)
+    monotonic[0] += STALE_PANEL_SECONDS
+    await hub.panel_registry.async_note_status_stream(now)
+    return hub
+
+
+async def test_stale_panel_repair_is_created_once_at_threshold_and_clears_on_report(
+    hass, mock_config_entry
+) -> None:
+    """A valid return report resolves the one deduplicated stale-panel Repair."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    issue_id = _stale_issue_id(mock_config_entry.entry_id, mac_hex)
+
+    await hub.async_sync_stale_panel_repairs()
+    issue = _issue(hass, issue_id)
+    assert issue is not None
+    assert issue.is_fixable
+    assert issue.severity is ir.IssueSeverity.WARNING
+    assert issue.data == {"entry_id": mock_config_entry.entry_id, "mac_hex": mac_hex}
+    assert mac_hex not in str(issue.translation_placeholders)
+
+    await hub.async_sync_stale_panel_repairs()
+    assert len([key for key in ir.async_get(hass).issues if key[1] == issue_id]) == 1
+
+    await hub.async_note_panel_report(mac_hex, "r0100", _utc("2026-09-24T00:00:00"))
+    assert _issue(hass, issue_id) is None
+
+
+async def test_stale_panel_repair_does_not_exist_one_second_before_threshold(
+    hass, mock_config_entry
+) -> None:
+    """Observed absence needs the full thirty days before it becomes a Repair."""
+    now = _utc("2026-08-24T00:00:00")
+    monotonic = [0.0]
+    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
+    hub.panel_registry = PanelRegistry(
+        hass,
+        mock_config_entry.entry_id,
+        clock=lambda: now,
+        monotonic_clock=lambda: monotonic[0],
+    )
+    await hub.panel_registry.async_load()
+    await hub.panel_registry.async_note_panel_report(
+        "ff00ffffffff01ff", "r0100", now
+    )
+    await hub.panel_registry.async_note_status_stream(now)
+    now += timedelta(seconds=STALE_PANEL_SECONDS - 1)
+    monotonic[0] += STALE_PANEL_SECONDS - 1
+    await hub.panel_registry.async_note_status_stream(now)
+    await hub.async_sync_stale_panel_repairs()
+
+    assert _issue(
+        hass, _stale_issue_id(mock_config_entry.entry_id, "ff00ffffffff01ff")
+    ) is None
+
+
+async def test_stale_panel_repair_cancel_keeps_registry_and_home_assistant_records(
+    hass, mock_config_entry
+) -> None:
+    """Opening then cancelling a repair never changes a panel or registry records."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    mock_config_entry.add_to_hass(hass)
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub)
+    await hub.async_sync_stale_panel_repairs()
+    issue_id = _stale_issue_id(mock_config_entry.entry_id, mac_hex)
+
+    flow = await async_create_fix_flow(
+        hass,
+        issue_id,
+        {"entry_id": mock_config_entry.entry_id, "mac_hex": mac_hex},
+    )
+    flow.hass = hass
+    flow.handler = DOMAIN
+    result = await flow.async_step_confirm()
+
+    assert result["type"] == "form"
+    assert mac_hex in hub.panel_registry.records
+    assert _issue(hass, issue_id) is not None
+
+
+async def test_diagnostics_do_not_export_full_panel_macs_for_stale_panel_work(
+    hass, mock_config_entry
+) -> None:
+    """Stale-panel diagnostics retain state facts without household MAC addresses."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    hub.thermostats[mac_hex] = ThermostatState(
+        mac=bytes.fromhex(mac_hex), room_id="r0100", available=False
+    )
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub, health=hub.health)
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+
+    assert mac_hex not in str(diagnostics)
+    assert "r0100" not in str(diagnostics)
+
+
+async def test_stale_panel_repair_confirm_removes_only_owned_records_then_rediscovery(
+    hass, mock_config_entry
+) -> None:
+    """Confirmed cleanup removes owned records and the same MAC can reappear once."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    entry_id = mock_config_entry.entry_id
+    issue_id = _stale_issue_id(entry_id, mac_hex)
+    prefix = _panel_unique_id_prefix(entry_id, mac_hex)
+    mock_config_entry.add_to_hass(hass)
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub)
+
+    device_registry = dr.async_get(hass)
+    panel_device = device_registry.async_get_or_create(
+        config_entry_id=entry_id,
+        identifiers={(DOMAIN, f"{entry_id}_{mac_hex}")},
+    )
+    entity_registry = er.async_get(hass)
+    owned_entities = [
+        entity_registry.async_get_or_create(
+            domain,
+            DOMAIN,
+            f"{prefix}{suffix}",
+            config_entry=mock_config_entry,
+            device_id=panel_device.id,
+        )
+        for domain, suffix in (
+            ("climate", "climate"),
+            ("sensor", "automation_temperature"),
+            ("sensor", "automation_humidity"),
+        )
+    ]
+    unrelated = entity_registry.async_get_or_create(
+        "sensor",
+        "unrelated_platform",
+        "unrelated_panel_entity",
+        device_id=panel_device.id,
+    )
+    await hub.async_sync_stale_panel_repairs()
+
+    flow = await async_create_fix_flow(
+        hass,
+        issue_id,
+        {"entry_id": entry_id, "mac_hex": mac_hex},
+    )
+    flow.hass = hass
+    flow.handler = DOMAIN
+    result = await flow.async_step_confirm({})
+
+    assert result["type"] == "create_entry"
+    assert mac_hex not in hub.panel_registry.records
+    assert _issue(hass, issue_id) is None
+    assert all(entity_registry.async_get(item.entity_id) is None for item in owned_entities)
+    assert entity_registry.async_get(unrelated.entity_id) is not None
+    assert device_registry.async_get(panel_device.id) is not None
+
+    entity_registry.async_remove(unrelated.entity_id)
+    is_new = await hub.async_note_panel_report(
+        mac_hex, "r0100", _utc("2026-09-24T00:00:00")
+    )
+    assert is_new
+    replacement = device_registry.async_get_or_create(
+        config_entry_id=entry_id,
+        identifiers={(DOMAIN, f"{entry_id}_{mac_hex}")},
+    )
+    recreated = [
+        entity_registry.async_get_or_create(
+            domain,
+            DOMAIN,
+            f"{prefix}{suffix}",
+            config_entry=mock_config_entry,
+            device_id=replacement.id,
+        )
+        for domain, suffix in (
+            ("climate", "climate"),
+            ("sensor", "automation_temperature"),
+            ("sensor", "automation_humidity"),
+        )
+    ]
+    assert len({item.entity_id for item in recreated}) == 3
+    assert len(
+        [
+            item
+            for item in er.async_entries_for_config_entry(entity_registry, entry_id)
+            if item.unique_id.startswith(prefix)
+        ]
+    ) == 3
+    assert _issue(hass, issue_id) is None
+
+
+async def test_stale_panel_confirm_removes_device_when_no_unrelated_entities(
+    hass, mock_config_entry, monkeypatch
+) -> None:
+    """A panel-only device is removed after every owned entity registry entry."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    entry_id = mock_config_entry.entry_id
+    prefix = _panel_unique_id_prefix(entry_id, mac_hex)
+    mock_config_entry.add_to_hass(hass)
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub)
+    device_registry = dr.async_get(hass)
+    panel_device = device_registry.async_get_or_create(
+        config_entry_id=entry_id,
+        identifiers={(DOMAIN, f"{entry_id}_{mac_hex}")},
+    )
+    entity_registry = er.async_get(hass)
+    entity_registry.async_get_or_create(
+        "climate",
+        DOMAIN,
+        f"{prefix}climate",
+        config_entry=mock_config_entry,
+        device_id=panel_device.id,
+    )
+    await hub.async_sync_stale_panel_repairs()
+    mock_config_entry._async_set_state(hass, ConfigEntryState.LOADED, None)
+    reloads: list[str] = []
+    monkeypatch.setattr(
+        hass.config_entries,
+        "async_schedule_reload",
+        lambda entry_id: reloads.append(entry_id),
+    )
+    flow = await async_create_fix_flow(
+        hass,
+        _stale_issue_id(entry_id, mac_hex),
+        {"entry_id": entry_id, "mac_hex": mac_hex},
+    )
+    flow.hass = hass
+    flow.handler = DOMAIN
+
+    await flow.async_step_confirm({})
+
+    assert device_registry.async_get(panel_device.id) is None
+    assert mac_hex not in hub.panel_registry.records
+    assert reloads == [entry_id]
+
+
+async def test_stale_panel_registry_failure_keeps_source_record_for_retry(
+    hass, mock_config_entry, monkeypatch
+) -> None:
+    """A partial registry cleanup never discards the persisted panel source."""
+    hub = await _make_stale_hub(hass, mock_config_entry)
+    mac_hex = "ff00ffffffff01ff"
+    entry_id = mock_config_entry.entry_id
+    prefix = _panel_unique_id_prefix(entry_id, mac_hex)
+    mock_config_entry.add_to_hass(hass)
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub)
+    device_registry = dr.async_get(hass)
+    panel_device = device_registry.async_get_or_create(
+        config_entry_id=entry_id,
+        identifiers={(DOMAIN, f"{entry_id}_{mac_hex}")},
+    )
+    entity_registry = er.async_get(hass)
+    entity_registry.async_get_or_create(
+        "climate",
+        DOMAIN,
+        f"{prefix}climate",
+        config_entry=mock_config_entry,
+        device_id=panel_device.id,
+    )
+    await hub.async_sync_stale_panel_repairs()
+    flow = await async_create_fix_flow(
+        hass,
+        _stale_issue_id(entry_id, mac_hex),
+        {"entry_id": entry_id, "mac_hex": mac_hex},
+    )
+    flow.hass = hass
+    flow.handler = DOMAIN
+
+    def fail_remove(_entity_id: str) -> None:
+        raise RuntimeError("entity registry unavailable")
+
+    monkeypatch.setattr(entity_registry, "async_remove", fail_remove)
+    with pytest.raises(RuntimeError, match="entity registry unavailable"):
+        await flow.async_step_confirm({})
+
+    assert mac_hex in hub.panel_registry.records
+    assert _issue(hass, _stale_issue_id(entry_id, mac_hex)) is not None
 
 
 async def test_login_timeout_repair_starts_after_three_consecutive_failures(
@@ -225,16 +546,31 @@ async def test_removing_entry_clears_entry_linked_connection_repairs(
     for _ in range(3):
         await manager.async_set_login_timeout(True)
     await manager.async_set_protocol_incompatible(True)
+    stale_mac = "ff00ffffffff01ff"
+    await manager.async_set_stale_panel(
+        PanelRecord(
+            mac_hex=stale_mac,
+            room_id="r0100",
+            first_seen_utc=_utc("2026-08-01T00:00:00"),
+            last_report_utc=_utc("2026-08-02T00:00:00"),
+            available=False,
+            monitored_absence_seconds=STALE_PANEL_SECONDS,
+            checkpoint_utc=None,
+        ),
+        "客餐厅",
+    )
 
     login_issue_id = f"login_timeout_{mock_config_entry.entry_id}"
     protocol_issue_id = f"protocol_incompatible_{mock_config_entry.entry_id}"
     assert _issue(hass, login_issue_id) is not None
     assert _issue(hass, protocol_issue_id) is not None
+    assert _issue(hass, _stale_issue_id(mock_config_entry.entry_id, stale_mac)) is not None
 
     await hass.config_entries.async_remove(mock_config_entry.entry_id)
 
     assert _issue(hass, login_issue_id) is None
     assert _issue(hass, protocol_issue_id) is None
+    assert _issue(hass, _stale_issue_id(mock_config_entry.entry_id, stale_mac)) is None
 
 
 async def test_runtime_tcp_failure_does_not_create_login_or_protocol_repairs(

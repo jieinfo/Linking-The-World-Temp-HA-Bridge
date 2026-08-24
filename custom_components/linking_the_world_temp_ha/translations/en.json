@@ -92,6 +92,23 @@
         },
         "abort": {"entry_not_found": "The associated config entry could not be found"}
       }
+    },
+    "stale_panel": {
+      "title": "Room thermostat panel has not reported for 30 days",
+      "description": "{room} ({short_mac}) has not sent a valid report since {last_report}. Confirming removal deletes only this integration's panel entities and stored panel record. Cancel leaves everything unchanged.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Remove stale room thermostat panel",
+            "description": "This action removes the stale panel from this integration. It does not delete Home Assistant automations. A future report from the same panel will be discovered again.",
+            "data": {}
+          }
+        },
+        "abort": {
+          "entry_not_found": "The associated config entry could not be found",
+          "entry_not_loaded": "The associated integration is not currently loaded"
+        }
+      }
     }
   },
   "entity": {

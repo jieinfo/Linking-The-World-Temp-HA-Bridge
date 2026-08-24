@@ -6,7 +6,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from custom_components.linking_the_world_temp_ha.panel_registry import PanelRegistry
+from custom_components.linking_the_world_temp_ha.panel_registry import (
+    STALE_PANEL_SECONDS,
+    PanelRegistry,
+)
 
 
 def utc(value: str) -> datetime:
@@ -243,3 +246,28 @@ async def test_flush_writes_v2_utc_records_for_restart(hass, hass_storage):
     await restarted.async_load()
     assert restarted.room_names == {"r0100": "客餐厅"}
     assert set(restarted.records) == {"ff00ffffffff01ff"}
+
+
+async def test_stale_panels_begin_at_exactly_thirty_observed_days(hass) -> None:
+    """A panel becomes stale at the threshold, not one second sooner."""
+    now = utc("2026-08-24T00:00:00")
+    monotonic = [0.0]
+    registry = PanelRegistry(
+        hass,
+        "stale-threshold",
+        clock=lambda: now,
+        monotonic_clock=lambda: monotonic[0],
+    )
+    await registry.async_load()
+    await registry.async_note_panel_report("ff00ffffffff01ff", "r0100", now)
+    await registry.async_note_status_stream(now)
+
+    now += timedelta(seconds=STALE_PANEL_SECONDS - 1)
+    monotonic[0] += STALE_PANEL_SECONDS - 1
+    await registry.async_note_status_stream(now)
+    assert registry.stale_macs == ()
+
+    now += timedelta(seconds=1)
+    monotonic[0] += 1
+    await registry.async_note_status_stream(now)
+    assert registry.stale_macs == ("ff00ffffffff01ff",)
