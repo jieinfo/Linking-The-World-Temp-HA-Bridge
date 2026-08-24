@@ -111,6 +111,43 @@ async def test_system_switch_service_round_trips_through_controller_push_ack(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
+async def test_thermostat_power_service_skips_an_already_applied_state(
+    hass, setup_integration, fake_controller
+):
+    """A repeated panel power request cannot wait for an acknowledgement that will not come."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=True)
+    )
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    command_count = sum(
+        frame.kind == 4 and frame.opcode == 9
+        for frame in fake_controller.received_frames
+    )
+
+    await hass.services.async_call(
+        climate.DOMAIN,
+        climate.SERVICE_SET_HVAC_MODE,
+        {"entity_id": climate_entity, "hvac_mode": "cool"},
+        blocking=True,
+    )
+
+    assert sum(
+        frame.kind == 4 and frame.opcode == 9
+        for frame in fake_controller.received_frames
+    ) == command_count
+    assert f"thermostat_{mac_hex}" not in hub._pending
+    assert hub.last_command_status.startswith("confirmed:")
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_system_mode_scene_and_humidifier_follow_controller_push_state(
     hass, setup_integration, fake_controller
 ):
