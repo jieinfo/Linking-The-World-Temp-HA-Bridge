@@ -124,10 +124,48 @@
       "system_scene": {"name": "场景"}
     },
     "sensor": {
-      "connection_error": {"name": "最近连接错误"},
-      "protocol_status": {"name": "协议验证状态"},
+      "connection_stage": {
+        "name": "主机连接阶段",
+        "state": {
+          "disconnected": "未连接",
+          "connecting": "正在连接",
+          "handshaking": "正在握手",
+          "authenticating": "正在登录",
+          "ready": "已就绪"
+        }
+      },
+      "connection_error": {
+        "name": "连接失败类别",
+        "state": {
+          "none": "无",
+          "tcp_refused": "TCP 连接被拒绝",
+          "tcp_timeout": "TCP 连接超时",
+          "handshake_failed": "协议握手失败",
+          "login_timeout": "登录超时",
+          "authentication_rejected": "账号或密码被拒绝",
+          "protocol_incompatible": "协议不兼容",
+          "status_silence": "状态上报中断"
+        }
+      },
+      "protocol_status": {
+        "name": "协议验证状态",
+        "state": {"waiting": "等待验证", "verified": "已验证", "unknown": "未知"}
+      },
       "control_permission": {"name": "控制权限"},
-      "last_command": {"name": "最近控制命令"},
+      "last_command": {
+        "name": "最近控制命令状态",
+        "state": {
+          "idle": "空闲",
+          "waiting": "等待主机确认",
+          "queued": "已排队",
+          "confirmed": "已确认",
+          "retrying": "正在重试",
+          "timeout": "确认超时",
+          "timeout_continuing": "超时，继续执行最新命令",
+          "failed": "发送失败",
+          "unknown": "未知"
+        }
+      },
       "panel_count": {"name": "已发现面板数量"},
       "automation_temperature": {"name": "自动化温度"},
       "automation_humidity": {"name": "自动化湿度"}

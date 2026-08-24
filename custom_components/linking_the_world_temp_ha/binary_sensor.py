@@ -41,7 +41,7 @@ class ProtocolVerifiedSensor(LinkingTempEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        return self.hub.available
+        return True
 
 
 async def async_setup_entry(

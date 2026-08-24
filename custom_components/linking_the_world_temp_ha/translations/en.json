@@ -123,10 +123,48 @@
       "system_scene": {"name": "Scene"}
     },
     "sensor": {
-      "connection_error": {"name": "Last connection error"},
-      "protocol_status": {"name": "Protocol status"},
+      "connection_stage": {
+        "name": "Controller connection stage",
+        "state": {
+          "disconnected": "Disconnected",
+          "connecting": "Connecting",
+          "handshaking": "Handshaking",
+          "authenticating": "Authenticating",
+          "ready": "Ready"
+        }
+      },
+      "connection_error": {
+        "name": "Connection failure category",
+        "state": {
+          "none": "None",
+          "tcp_refused": "TCP connection refused",
+          "tcp_timeout": "TCP connection timed out",
+          "handshake_failed": "Handshake failed",
+          "login_timeout": "Login timed out",
+          "authentication_rejected": "Credentials rejected",
+          "protocol_incompatible": "Protocol incompatible",
+          "status_silence": "Status stream silent"
+        }
+      },
+      "protocol_status": {
+        "name": "Protocol status",
+        "state": {"waiting": "Waiting for verification", "verified": "Verified", "unknown": "Unknown"}
+      },
       "control_permission": {"name": "Control permission"},
-      "last_command": {"name": "Last command"},
+      "last_command": {
+        "name": "Last command state",
+        "state": {
+          "idle": "Idle",
+          "waiting": "Waiting for controller confirmation",
+          "queued": "Queued",
+          "confirmed": "Confirmed",
+          "retrying": "Retrying",
+          "timeout": "Confirmation timed out",
+          "timeout_continuing": "Timed out, continuing latest command",
+          "failed": "Send failed",
+          "unknown": "Unknown"
+        }
+      },
       "panel_count": {"name": "Discovered panel count"},
       "automation_temperature": {"name": "Automation temperature"},
       "automation_humidity": {"name": "Automation humidity"}

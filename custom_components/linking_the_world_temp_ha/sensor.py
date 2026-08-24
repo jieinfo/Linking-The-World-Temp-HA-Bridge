@@ -16,6 +16,7 @@ from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .diagnostics import _command_state, _protocol_status
 from .entity import LinkingTempEntity, LinkingThermostatEntity
 from .hub import LinkingTempHub
 
@@ -29,16 +30,21 @@ class DiagnosticDescription:
 
 DIAGNOSTICS = (
     DiagnosticDescription(
-        "connection_error", "connection_error", lambda hub: hub.last_connection_error
+        "connection_stage", "connection_stage", lambda hub: hub.health.stage.value
     ),
     DiagnosticDescription(
-        "protocol_status", "protocol_status", lambda hub: hub.protocol_status
+        "connection_error",
+        "connection_error",
+        lambda hub: hub.health.failure_kind.value,
+    ),
+    DiagnosticDescription(
+        "protocol_status", "protocol_status", lambda hub: _protocol_status(hub.protocol_status)
     ),
     DiagnosticDescription(
         "control_permission", "control_permission", lambda hub: hub.control_permission
     ),
     DiagnosticDescription(
-        "last_command", "last_command", lambda hub: hub.last_command_status
+        "last_command", "last_command", lambda hub: _command_state(hub.last_command_status)
     ),
     DiagnosticDescription(
         "panel_count", "panel_count", lambda hub: len(hub.thermostats)
