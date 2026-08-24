@@ -6,7 +6,7 @@
 
 **Architecture:** Keep one push TCP session per config entry, but move protocol failures, health metrics, panel persistence, and Repairs into focused modules. Store the resulting typed runtime object in `ConfigEntry.runtime_data`; use a programmable fake MC7021 server and a real Home Assistant pytest runtime to verify behavior end to end.
 
-**Tech Stack:** Python 3.13, Home Assistant 2026.8+, asyncio TCP, voluptuous, Home Assistant config entries/Repairs/device and entity registries/storage, pytest, pytest-homeassistant-custom-component, pytest-cov, HACS validation, hassfest.
+**Tech Stack:** Python 3.14, Home Assistant 2026.8+, asyncio TCP, voluptuous, Home Assistant config entries/Repairs/device and entity registries/storage, pytest, pytest-homeassistant-custom-component, pytest-cov, HACS validation, hassfest.
 
 **Spec:** `docs/superpowers/specs/2026-08-24-native-integration-1.0-design.md`
 
@@ -85,7 +85,7 @@ Expected: FAIL because the HA pytest fixtures and fake controller do not exist.
 - [ ] **Step 3: Add deterministic test dependencies and pytest configuration**
 
 `requirements_test.txt` must pin `pytest-homeassistant-custom-component==0.13.357`
-(Home Assistant `2026.8.3`) and `pytest-cov==6.2.1`; the HA test package
+(Home Assistant `2026.8.3`) and `pytest-cov==7.1.0`; the HA test package
 supplies its compatible pytest and asyncio dependencies. `pytest.ini` must set
 `asyncio_mode = auto`, register `enable_custom_integrations`, and restrict
 default discovery to `tests`.
@@ -494,7 +494,9 @@ Run: `pytest -q tests/native/test_diagnostics.py -vv`
 
 Run: `rg -n 'body\.hex\(\)|frame\.body\.hex\(\)' custom_components/linking_the_world_temp_ha`
 
-Expected: diagnostic tests PASS; any raw hex logging found is guarded by debug logging and never copied into health/diagnostics.
+Expected: diagnostic tests PASS; the raw-hex search returns no production protocol
+logging. Debug logs contain only safe frame metadata and are never copied into
+health/diagnostics.
 
 - [ ] **Step 6: Commit**
 
@@ -540,9 +542,9 @@ Expected: PASS at 95% or higher. Add behavior-focused tests for any meaningful u
 
 - [ ] **Step 5: Make CI enforce the stable gates**
 
-The native job uses a `pytest_ha` matrix containing `0.13.354` (Home Assistant
-`2026.8.0`) and `0.13.357` (Home Assistant `2026.8.3`), installs
-`pytest-cov==6.2.1`, and runs the exact coverage command for both. Keep HACS and
+The native job uses Python `3.14` and a `pytest_ha` matrix containing `0.13.354`
+(Home Assistant `2026.8.0`) and `0.13.357` (Home Assistant `2026.8.3`), installs
+`pytest-cov==7.1.0`, and runs the exact coverage command for both. Keep HACS and
 hassfest jobs. When the supported current HA release changes, update only the
 second matrix value and `requirements_test.txt`; retain `0.13.354` as the
 minimum-version gate.

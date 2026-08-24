@@ -9,7 +9,7 @@ import time
 import pytest
 from homeassistant.components import climate, select, switch
 from homeassistant.const import ATTR_TEMPERATURE
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
 import custom_components.linking_the_world_temp_ha.hub as hub_module
@@ -277,8 +277,16 @@ async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
     assert state.state == "off"
     assert state.attributes["hvac_modes"] == ["off"]
 
-    # Home Assistant rejects unavailable modes before it invokes the entity,
-    # so the integration exposes only OFF here and sends no controller command.
+    received_before = len(fake_controller.received_frames)
+    with pytest.raises(ServiceValidationError, match="HVAC mode heat is not valid"):
+        await hass.services.async_call(
+            climate.DOMAIN,
+            climate.SERVICE_SET_HVAC_MODE,
+            {"entity_id": climate_entity, "hvac_mode": "heat"},
+            blocking=True,
+        )
+    await hass.async_block_till_done()
+    assert len(fake_controller.received_frames) == received_before
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -466,6 +474,15 @@ async def test_control_guards_reject_invalid_or_unsafe_operations(
         await hub.async_set_thermostat_temperature(mac_hex, 29)
     with pytest.raises(HomeAssistantError, match="尚未被主机发现"):
         await hub.async_set_thermostat_temperature("ff00ffffffff09ff", 22)
+
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=4))
+    await _wait_for(lambda: hub.state.mode == "dehumidify")
+    received_before = len(fake_controller.received_frames)
+    blocked_before = hub.health.snapshot()["counters"]["commands_blocked"]
+    with pytest.raises(HomeAssistantError, match="当前为除湿模式"):
+        await hub.async_set_thermostat_power(mac_hex, True)
+    assert hub.health.snapshot()["counters"]["commands_blocked"] == blocked_before + 1
+    assert len(fake_controller.received_frames) == received_before
 
     hub.allow_control = False
     assert hub.control_permission == "read_only"

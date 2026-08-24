@@ -556,11 +556,11 @@ class AsyncMoorgenClient:
             self._writer.write(frame.encode())
             await self._writer.drain()
             _LOGGER.debug(
-                "Sent MC7021 kind=%02x opcode=%02x seq=%d body=%s",
+                "Sent MC7021 kind=%02x opcode=%02x seq=%d body_length=%d",
                 kind,
                 opcode,
                 frame.sequence,
-                body.hex(),
+                len(body),
             )
 
     async def _wait_for(self, kind: int, opcode: int, timeout: float) -> YasHcpFrame:
@@ -611,10 +611,11 @@ class AsyncMoorgenClient:
                     inbox.put_nowait(frame)
                 for frame in frames:
                     _LOGGER.debug(
-                        "Received MC7021 kind=%02x opcode=%02x body=%s",
+                        "Received MC7021 kind=%02x opcode=%02x seq=%d body_length=%d",
                         frame.kind,
                         frame.opcode,
-                        frame.body.hex(),
+                        frame.sequence,
+                        len(frame.body),
                     )
                     if self.on_frame is not None:
                         result = self.on_frame(frame)

@@ -135,7 +135,7 @@ class FakeMC7021Server:
                 for frame in decoder.feed(data):
                     self.received_frames.append(frame)
                     self.received_frame_event.set()
-                    await self._async_handle_frame(frame)
+                    await self._async_handle_frame(frame, writer)
         except ConnectionError:
             # Home Assistant may reset a short-lived validation connection as
             # soon as a config-flow handshake succeeds. That is a normal peer
@@ -146,11 +146,13 @@ class FakeMC7021Server:
                 self._writer = None
             self._client_tasks.discard(task)
 
-    async def _async_handle_frame(self, frame: YasHcpFrame) -> None:
+    async def _async_handle_frame(
+        self, frame: YasHcpFrame, writer: asyncio.StreamWriter
+    ) -> None:
         if (frame.kind, frame.opcode) == (1, 1):
-            await self._async_respond("hello", frame, self.behavior.hello_reply)
+            await self._async_respond("hello", frame, self.behavior.hello_reply, writer)
         elif (frame.kind, frame.opcode) == (2, 4):
-            await self._async_respond("login", frame, self.behavior.login_reply)
+            await self._async_respond("login", frame, self.behavior.login_reply, writer)
         elif (frame.kind, frame.opcode) == (3, 7):
             category = next(
                 (value for tag, value in iter_tlvs(frame.body) if tag == 0x000F),
@@ -160,6 +162,7 @@ class FakeMC7021Server:
                 "status",
                 frame,
                 YasHcpFrame(5, 0x0C, frame.sequence, tlv(0x000F, category)),
+                writer,
             )
         elif (frame.kind, frame.opcode) == (4, 9) and self.on_command is not None:
             result = self.on_command(frame)
@@ -167,20 +170,29 @@ class FakeMC7021Server:
                 await result
 
     async def _async_respond(
-        self, stage: str, request: YasHcpFrame, reply: FrameReply
+        self,
+        stage: str,
+        request: YasHcpFrame,
+        reply: FrameReply,
+        writer: asyncio.StreamWriter,
     ) -> None:
         delay = self.behavior.delay_for(stage)
         if delay:
             await asyncio.sleep(delay)
-        try:
-            if isinstance(reply, YasHcpFrame):
-                await self.async_send_frames(replace(reply, sequence=request.sequence))
-            elif isinstance(reply, bytes):
-                await self._async_write(reply)
-        except RuntimeError as error:
-            if error.args != ("No MC7021 client is connected",):
-                raise
+        if self._writer is not writer or writer.is_closing():
             return
+        payload = (
+            replace(reply, sequence=request.sequence).encode()
+            if isinstance(reply, YasHcpFrame)
+            else reply
+        )
+        if payload is not None:
+            try:
+                await self._async_write_to(writer, payload)
+            except (ConnectionError, OSError):
+                if self._writer is not writer or writer.is_closing():
+                    return
+                raise
         if self.behavior.close_after_stage == stage:
             await self.async_close_client()
 
@@ -189,15 +201,23 @@ class FakeMC7021Server:
     ) -> None:
         if self._writer is None:
             raise RuntimeError("No MC7021 client is connected")
+        await self._async_write_to(self._writer, payload, fragment_size)
+
+    async def _async_write_to(
+        self,
+        writer: asyncio.StreamWriter,
+        payload: bytes,
+        fragment_size: int | None = None,
+    ) -> None:
         if fragment_size is not None and fragment_size <= 0:
             raise ValueError("fragment_size must be positive")
         if fragment_size is None:
-            self._writer.write(payload)
-            await self._writer.drain()
+            writer.write(payload)
+            await writer.drain()
             return
         for offset in range(0, len(payload), fragment_size):
-            self._writer.write(payload[offset : offset + fragment_size])
-            await self._writer.drain()
+            writer.write(payload[offset : offset + fragment_size])
+            await writer.drain()
 
     def _next_sequence(self) -> int:
         sequence = self._sequence

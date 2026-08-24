@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -331,6 +332,46 @@ async def test_protocol_does_not_treat_login_eof_as_bad_credentials(
     finally:
         await client.close()
         await server.async_stop()
+
+
+async def test_protocol_debug_logs_exclude_credentials_and_raw_frame_bodies(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Debug metadata must remain useful without exposing protocol payloads."""
+    username = "USERNAME-CANARY"
+    password = "PASSWORD-CANARY"
+    client_id = "cafebabedeadbeef"
+    inbound_body = b"INBOUND-BODY-CANARY"
+    inbound_received = asyncio.Event()
+    server = FakeMC7021Server()
+    await server.async_start()
+    client = AsyncMoorgenClient(
+        server.host, server.port, username, password, client_id
+    )
+
+    async def note_inbound(frame: YasHcpFrame) -> None:
+        if frame.body == inbound_body:
+            inbound_received.set()
+
+    client.on_frame = note_inbound
+    caplog.set_level(
+        logging.DEBUG, logger="custom_components.linking_the_world_temp_ha.protocol"
+    )
+    try:
+        await client.connect()
+        await server.async_send_frames(YasHcpFrame(3, 8, 0, inbound_body))
+        await asyncio.wait_for(inbound_received.wait(), timeout=1)
+    finally:
+        await client.close()
+        await server.async_stop()
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    for secret in (username, password, client_id, inbound_body.decode()):
+        assert secret not in logs
+        assert secret.encode().hex() not in logs
+    assert "Sent MC7021 kind=02 opcode=04" in logs
+    assert "Received MC7021 kind=03 opcode=08" in logs
+    assert "body_length=" in logs
 
 
 def test_protocol_keeps_cannot_connect_as_the_compatibility_alias() -> None:
