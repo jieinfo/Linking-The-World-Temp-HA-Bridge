@@ -284,23 +284,25 @@ class LinkingTempHub:
 
     async def async_set_thermostat_power(self, mac_hex: str, enabled: bool) -> None:
         thermostat = self._require_thermostat(mac_hex)
+        target = f"thermostat_{mac_hex}"
         send_guard = self._room_thermostat_block_reason if enabled else None
         if send_guard is not None and (reason := send_guard()):
             self.health.increment("commands_blocked")
             raise HomeAssistantError(reason)
         expected_power = "ON" if enabled else "OFF"
-        if thermostat.power == expected_power:
+        if target not in self._pending and thermostat.power == expected_power:
             self.last_command_status = (
                 f"confirmed:{self.thermostat_name(thermostat)} 开关"
             )
             self._notify()
             return
         await self._async_send_tracked(
-            f"thermostat_{mac_hex}",
+            target,
             f"{self.thermostat_name(thermostat)} 开关",
             {"power": expected_power},
             thermostat.mac,
             COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
+            coalesce=True,
             send_guard=send_guard,
         )
 

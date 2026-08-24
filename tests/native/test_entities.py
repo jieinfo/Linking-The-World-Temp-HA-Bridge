@@ -149,6 +149,66 @@ async def test_thermostat_power_service_skips_an_already_applied_state(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
+async def test_opposite_thermostat_power_request_is_applied_after_pending_ack(
+    hass, setup_integration, fake_controller
+):
+    """The final panel power intent survives an opposite command awaiting confirmation."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    power_commands: list[int] = []
+
+    async def acknowledge_only_power_off(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) != bytes.fromhex(mac_hex):
+            return
+        command = fields.get(0x0009, b"\x00")[0]
+        power_commands.append(command)
+        if command == 1:
+            await fake_controller.async_send_status(
+                _thermostat_status(hub, mac_hex, power=False)
+            )
+
+    fake_controller.on_command = acknowledge_only_power_off
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    await hass.services.async_call(
+        climate.DOMAIN,
+        climate.SERVICE_SET_HVAC_MODE,
+        {"entity_id": climate_entity, "hvac_mode": "cool"},
+        blocking=True,
+    )
+    await _wait_for(lambda: power_commands == [2])
+
+    await hass.services.async_call(
+        climate.DOMAIN,
+        climate.SERVICE_SET_HVAC_MODE,
+        {"entity_id": climate_entity, "hvac_mode": "off"},
+        blocking=True,
+    )
+    target = f"thermostat_{mac_hex}"
+    assert hub._queued[target].expected == {"power": "OFF"}
+
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=True)
+    )
+    await _wait_for(
+        lambda: power_commands == [2, 1]
+        and hub.thermostats[mac_hex].power == "OFF"
+        and target not in hub._pending
+        and target not in hub._queued,
+        timeout=2,
+    )
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_latest_temperature_replaces_a_queue_waiting_for_dispatch(
     hass, setup_integration, fake_controller
 ):
@@ -172,6 +232,22 @@ async def test_latest_temperature_replaces_a_queue_waiting_for_dispatch(
     climate_entity = _entity_id(
         hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
     )
+    sent_targets: list[int] = []
+
+    async def acknowledge_temperature(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if (
+            fields.get(0x0004) != bytes.fromhex(mac_hex)
+            or fields.get(0x0009) != b"\x03"
+        ):
+            return
+        target_temperature = fields[0x000A][0] // 2
+        sent_targets.append(target_temperature)
+        await fake_controller.async_send_status(
+            _thermostat_status(hub, mac_hex, target=target_temperature)
+        )
+
+    fake_controller.on_command = acknowledge_temperature
 
     await hass.services.async_call(
         climate.DOMAIN,
@@ -181,7 +257,13 @@ async def test_latest_temperature_replaces_a_queue_waiting_for_dispatch(
     )
 
     assert target not in hub._queued
-    assert hub._pending[target].expected == {"target_temperature": "25"}
+    await _wait_for(
+        lambda: sent_targets == [25]
+        and hub.thermostats[mac_hex].target_temperature == 25
+        and target not in hub._pending
+        and target not in hub._queued,
+        timeout=2,
+    )
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
