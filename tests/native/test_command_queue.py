@@ -32,42 +32,54 @@ def pending(expected: str = "21"):
     )
 
 
-def replacement(expected: str):
+def replacement(expected: str, *, intent: str = "target_temperature"):
     return queue.QueuedCommand(
         "客餐厅 温控面板 设定温度",
         "thermostat_panel",
-        {"target_temperature": expected},
+        {intent: expected},
         b"panelmac",
         3,
-        int(expected) * 2,
+        int(expected) * 2 if intent == "target_temperature" else None,
     )
 
 
 class CommandQueueTests(unittest.TestCase):
     def test_repeated_pending_value_cancels_a_stale_replacement(self) -> None:
-        queued = queue.coalesce_latest(pending(), None, replacement("22"))
-        self.assertIsNotNone(queued)
-        self.assertIsNone(
-            queue.coalesce_latest(pending(), queued, replacement("21"))
+        queued = queue.coalesce_queued(pending(), (), replacement("22"))
+        self.assertEqual(
+            queue.coalesce_queued(pending(), queued, replacement("21")), []
         )
 
-    def test_identical_replacement_reuses_the_queued_command(self) -> None:
-        first = queue.coalesce_latest(pending(), None, replacement("22"))
-        assert first is not None
-        repeated = queue.coalesce_latest(pending(), first, replacement("22"))
-        self.assertIs(repeated, first)
-
     def test_only_the_latest_value_is_retained(self) -> None:
-        first = queue.coalesce_latest(pending(), None, replacement("22"))
-        assert first is not None
-        latest = queue.coalesce_latest(pending(), first, replacement("23"))
-        assert latest is not None
-        self.assertEqual(latest.expected, {"target_temperature": "23"})
+        first = queue.coalesce_queued(pending(), (), replacement("22"))
+        latest = queue.coalesce_queued(pending(), first, replacement("23"))
+        self.assertEqual(
+            [command.expected for command in latest],
+            [{"target_temperature": "23"}],
+        )
+
+    def test_independent_intents_keep_their_arrival_order(self) -> None:
+        temperature = queue.coalesce_queued(pending(), (), replacement("22"))
+        power = queue.coalesce_queued(
+            pending(), temperature, replacement("OFF", intent="power")
+        )
+        latest_temperature = queue.coalesce_queued(
+            pending(), power, replacement("23")
+        )
+        self.assertEqual(
+            [command.expected for command in latest_temperature],
+            [{"power": "OFF"}, {"target_temperature": "23"}],
+        )
 
     def test_queued_value_has_no_early_promotion_deadline(self) -> None:
-        queued = queue.coalesce_latest(pending(), None, replacement("22"))
-        assert queued is not None
+        queued = queue.coalesce_queued(pending(), (), replacement("22"))[0]
         self.assertFalse(hasattr(queued, "promote_at"))
+
+    def test_tracked_command_requires_one_intent(self) -> None:
+        with self.assertRaises(ValueError):
+            queue.command_intent({})
+        with self.assertRaises(ValueError):
+            queue.command_intent({"power": "ON", "mode": "cool"})
 
     def test_temperature_setpoint_can_only_be_retried_once(self) -> None:
         command = pending("22")

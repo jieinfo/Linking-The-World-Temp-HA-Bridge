@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 STATUS_POLL_INTERVAL = 2.0
@@ -34,19 +35,32 @@ class QueuedCommand:
     mac: bytes
     command: int
     value: int | None
+    send_guard: Callable[[], str | None] | None = None
 
 
-def coalesce_latest(
-    pending: PendingCommand,
-    queued: QueuedCommand | None,
+def command_intent(expected: dict[str, str]) -> str:
+    """Return the single state property changed by a tracked command."""
+    if len(expected) != 1:
+        raise ValueError("tracked commands must contain exactly one expected property")
+    return next(iter(expected))
+
+
+def coalesce_queued(
+    pending: PendingCommand | None,
+    queued: Sequence[QueuedCommand],
     replacement: QueuedCommand,
-) -> QueuedCommand | None:
-    """Keep only the final distinct value until the sent command is resolved."""
-    if replacement.expected == pending.expected:
-        return None
-    if queued is not None and replacement.expected == queued.expected:
-        return queued
-    return replacement
+) -> list[QueuedCommand]:
+    """Keep the latest command per property while preserving cross-property order."""
+    intent = command_intent(replacement.expected)
+    retained = [
+        command
+        for command in queued
+        if command_intent(command.expected) != intent
+    ]
+    if pending is not None and replacement.expected == pending.expected:
+        return retained
+    retained.append(replacement)
+    return retained
 
 
 def temperature_retry_is_allowed(pending: PendingCommand) -> bool:

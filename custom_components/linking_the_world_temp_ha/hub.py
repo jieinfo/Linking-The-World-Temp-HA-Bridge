@@ -19,7 +19,8 @@ from .command_queue import (
     STATUS_POLL_INTERVAL,
     PendingCommand,
     QueuedCommand,
-    coalesce_latest,
+    coalesce_queued,
+    command_intent,
     temperature_retry_is_allowed,
 )
 from .const import (
@@ -159,7 +160,7 @@ class LinkingTempHub:
         self._panel_lifecycle_lock = asyncio.Lock()
         self._last_command_at: float | None = None
         self._pending: dict[str, PendingCommand] = {}
-        self._queued: dict[str, QueuedCommand] = {}
+        self._queued: dict[str, list[QueuedCommand]] = {}
         self._has_attempted_connection = False
         self._session_authenticated = False
         self._reauth_required = False
@@ -290,21 +291,41 @@ class LinkingTempHub:
             self.health.increment("commands_blocked")
             raise HomeAssistantError(reason)
         expected_power = "ON" if enabled else "OFF"
-        if target not in self._pending and thermostat.power == expected_power:
-            self.last_command_status = (
-                f"confirmed:{self.thermostat_name(thermostat)} 开关"
-            )
-            self._notify()
+        label = f"{self.thermostat_name(thermostat)} 开关"
+        if thermostat.power == expected_power and await self._async_confirm_unchanged(
+            target, label, {"power": expected_power}
+        ):
             return
         await self._async_send_tracked(
             target,
-            f"{self.thermostat_name(thermostat)} 开关",
+            label,
             {"power": expected_power},
             thermostat.mac,
             COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
             coalesce=True,
             send_guard=send_guard,
         )
+
+    async def _async_confirm_unchanged(
+        self, target: str, label: str, expected: dict[str, str]
+    ) -> bool:
+        """Confirm an unchanged state and cancel only its stale queued intent."""
+        async with self._command_lock:
+            if target in self._pending:
+                return False
+            intent = command_intent(expected)
+            retained = [
+                command
+                for command in self._queued.get(target, ())
+                if command_intent(command.expected) != intent
+            ]
+            if retained:
+                self._queued[target] = retained
+            else:
+                self._queued.pop(target, None)
+            self.last_command_status = f"confirmed:{label}"
+            self._notify()
+            return True
 
     def _room_thermostat_block_reason(self) -> str | None:
         """Return why a room panel cannot be enabled at send time."""
@@ -618,6 +639,32 @@ class LinkingTempHub:
         coalesce: bool = False,
         send_guard: Callable[[], str | None] | None = None,
     ) -> None:
+        async with self._command_lock:
+            await self._async_send_tracked_locked(
+                target,
+                label,
+                expected,
+                mac,
+                command,
+                value,
+                coalesce=coalesce,
+                send_guard=send_guard,
+            )
+
+    async def _async_send_tracked_locked(
+        self,
+        target: str,
+        label: str,
+        expected: dict[str, str],
+        mac: bytes,
+        command: int,
+        value: int | None = None,
+        *,
+        coalesce: bool = False,
+        send_guard: Callable[[], str | None] | None = None,
+        from_queue: bool = False,
+    ) -> None:
+        """Send or queue one command while the per-hub command lock is held."""
         if not self.allow_control:
             self.health.increment("commands_blocked")
             raise HomeAssistantError("集成当前处于只读模式")
@@ -630,104 +677,115 @@ class LinkingTempHub:
                 self._increment_health("commands_blocked")
                 raise HomeAssistantError(reason)
 
-        async with self._command_lock:
-            if target in self._pending:
-                if not coalesce:
-                    self.health.increment("commands_blocked")
-                    raise HomeAssistantError(
-                        f"仍在等待主机确认: {self._pending[target].label}"
-                    )
-                pending = self._pending[target]
-                replacement = QueuedCommand(
-                    label, target, expected, mac, command, value
+        replacement = QueuedCommand(
+            label, target, expected, mac, command, value, send_guard
+        )
+        if target in self._pending:
+            if not coalesce:
+                self.health.increment("commands_blocked")
+                raise HomeAssistantError(
+                    f"仍在等待主机确认: {self._pending[target].label}"
                 )
-                queued = coalesce_latest(
-                    pending, self._queued.get(target), replacement
-                )
-                if queued is None:
-                    self._queued.pop(target, None)
-                    self.last_command_status = f"waiting:{pending.label}"
-                else:
-                    self._queued[target] = queued
-                    self.last_command_status = f"queued:{label}"
-                    self.health.increment("commands_coalesced")
-                self._notify()
-                return
-            if coalesce:
-                self._queued.pop(target, None)
-            now = time.monotonic()
-            if self._last_command_at is not None:
-                remaining = self.command_min_interval - (now - self._last_command_at)
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
-            validate_send_guard()
-            now = time.monotonic()
-            pending = PendingCommand(
-                label,
-                target,
-                expected,
-                now,
-                now + self.command_confirmation_timeout,
-                now
-                + min(
-                    STATUS_POLL_INTERVAL,
-                    max(0.5, self.command_confirmation_timeout / 2),
-                ),
-                mac,
-                command,
-                value,
+            pending = self._pending[target]
+            queued = coalesce_queued(
+                pending, self._queued.get(target, ()), replacement
             )
-            self._pending[target] = pending
-            self.last_command_status = f"waiting:{label}"
+            if queued:
+                self._queued[target] = queued
+                self.last_command_status = f"queued:{label}"
+                self.health.increment("commands_coalesced")
+            else:
+                self._queued.pop(target, None)
+                self.last_command_status = f"waiting:{pending.label}"
             self._notify()
-            try:
-                if send_guard is None:
-                    await self._client.send_command(mac, command, value)
-                else:
-                    await self._client.send_command(
-                        mac,
-                        command,
-                        value,
-                        before_write=validate_send_guard,
-                    )
-                self.health.increment("commands_sent")
-                self._last_command_at = time.monotonic()
-                await self._client.request_status()
-            except Exception:
-                self._pending.pop(target, None)
-                self.last_command_status = f"failed:{label}"
-                _LOGGER.warning(
-                    "MC7021 command send failed: target_type=%s command_code=%d "
-                    "attempt=1",
-                    self._command_target_type(target),
+            return
+        if coalesce and not from_queue and self._queued.get(target):
+            self._queued[target] = coalesce_queued(
+                None, self._queued[target], replacement
+            )
+            self.last_command_status = f"queued:{label}"
+            self.health.increment("commands_coalesced")
+            self._notify()
+            return
+        now = time.monotonic()
+        if self._last_command_at is not None:
+            remaining = self.command_min_interval - (now - self._last_command_at)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        validate_send_guard()
+        now = time.monotonic()
+        pending = PendingCommand(
+            label,
+            target,
+            expected,
+            now,
+            now + self.command_confirmation_timeout,
+            now
+            + min(
+                STATUS_POLL_INTERVAL,
+                max(0.5, self.command_confirmation_timeout / 2),
+            ),
+            mac,
+            command,
+            value,
+        )
+        self._pending[target] = pending
+        self.last_command_status = f"waiting:{label}"
+        self._notify()
+        try:
+            if send_guard is None:
+                await self._client.send_command(mac, command, value)
+            else:
+                await self._client.send_command(
+                    mac,
                     command,
+                    value,
+                    before_write=validate_send_guard,
                 )
-                self._notify()
-                raise
+            self.health.increment("commands_sent")
+            self._last_command_at = time.monotonic()
+            await self._client.request_status()
+        except Exception:
+            self._pending.pop(target, None)
+            self.last_command_status = f"failed:{label}"
+            _LOGGER.warning(
+                "MC7021 command send failed: target_type=%s command_code=%d "
+                "attempt=1",
+                self._command_target_type(target),
+                command,
+            )
+            self._notify()
+            raise
 
     async def _async_dispatch_queued(self) -> None:
-        ready = [target for target in self._queued if target not in self._pending]
-        if not ready:
-            return
-        queued = self._queued.pop(ready[0])
-        try:
-            await self._async_send_tracked(
-                queued.target,
-                queued.label,
-                queued.expected,
-                queued.mac,
-                queued.command,
-                queued.value,
-                coalesce=True,
-            )
-        except HomeAssistantError:
-            self.last_command_status = f"failed:{queued.label}"
-            _LOGGER.warning(
-                "Queued command was not sent: target_type=%s command_code=%d",
-                self._command_target_type(queued.target),
-                queued.command,
-            )
-            self._notify()
+        async with self._command_lock:
+            ready = [target for target in self._queued if target not in self._pending]
+            if not ready:
+                return
+            target = ready[0]
+            queued = self._queued[target].pop(0)
+            if not self._queued[target]:
+                self._queued.pop(target, None)
+            try:
+                await self._async_send_tracked_locked(
+                    queued.target,
+                    queued.label,
+                    queued.expected,
+                    queued.mac,
+                    queued.command,
+                    queued.value,
+                    coalesce=True,
+                    send_guard=queued.send_guard,
+                    from_queue=True,
+                )
+            except HomeAssistantError:
+                self.last_command_status = f"failed:{queued.label}"
+                _LOGGER.warning(
+                    "Queued command was not sent: target_type=%s command_code=%d",
+                    self._command_target_type(queued.target),
+                    queued.command,
+                )
+                self._notify()
 
     async def _async_poll_pending_status(self, now: float) -> None:
         """Request a fresh status report while commands await confirmation."""
@@ -778,13 +836,18 @@ class LinkingTempHub:
                 pending = self._pending.get(target)
                 if pending is None or now < pending.deadline:
                     continue
-                if target in self._queued:
+                pending_intent = command_intent(pending.expected)
+                has_newer_same_intent = any(
+                    command_intent(command.expected) == pending_intent
+                    for command in self._queued.get(target, ())
+                )
+                if has_newer_same_intent:
                     self._pending.pop(target, None)
                     self.health.increment("commands_timed_out")
                     self.last_command_status = f"timeout_continuing:{pending.label}"
                     _LOGGER.warning(
-                        "Command confirmation timed out; continuing latest queued "
-                        "value: target_type=%s command_code=%d attempt=%d "
+                        "Command confirmation timed out; continuing a newer queued "
+                        "intent: target_type=%s command_code=%d attempt=%d "
                         "elapsed_seconds=%.1f confirmation_timeout_seconds=%.1f",
                         self._command_target_type(target),
                         pending.command,

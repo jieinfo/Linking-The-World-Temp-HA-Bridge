@@ -111,7 +111,7 @@ async def async_get_config_entry_diagnostics(
             },
             "command_queue": {
                 "pending": len(hub._pending),
-                "queued": len(hub._queued),
+                "queued": sum(len(commands) for commands in hub._queued.values()),
             },
             "thermostat_count": len(hub.thermostats),
             "panels": _anonymous_thermostats(hub),
