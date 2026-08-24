@@ -25,14 +25,29 @@
           "client_id": "Protocol client ID",
           "tech_system_mac": "Technology-system MAC"
         }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate the technology-system controller",
+        "description": "The controller rejected the existing credentials. Enter the local username and password; the integration reloads automatically after validation.",
+        "data": {
+          "username": "Local username",
+          "password": "Local password"
+        }
       }
     },
     "error": {
       "cannot_connect": "Unable to connect or log in to the controller",
+      "handshake_failed": "The controller did not complete the protocol handshake. Check the controller model and TCP port 9000 service.",
+      "login_timeout": "The controller login response timed out. Check controller availability and local credentials.",
+      "invalid_auth": "The controller rejected the login. Check the local controller username and password.",
+      "protocol_incompatible": "The controller returned a protocol response unsupported by this integration.",
       "invalid_config": "Invalid client ID or technology-system MAC",
       "unknown": "Unexpected error; check the Home Assistant log"
     },
-    "abort": {"already_configured": "This controller is already configured"}
+    "abort": {
+      "already_configured": "This controller is already configured",
+      "reauth_successful": "The local controller credentials were updated"
+    }
   },
   "options": {
     "step": {
@@ -45,6 +60,36 @@
           "controller_silence_timeout": "Controller silence timeout (seconds)",
           "thermostat_offline_after": "Panel offline timeout (seconds; 0 disables)"
         }
+      }
+    }
+  },
+  "issues": {
+    "login_timeout": {
+      "title": "Technology-system controller login timed out repeatedly",
+      "description": "The controller has not completed login three times in a row. Check that it is online, TCP port 9000, and the local username and password, then choose Fix to verify the credentials.",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Reauthenticate local controller credentials",
+            "description": "Submitting opens the credential verification flow for this config entry.",
+            "data": {}
+          }
+        },
+        "abort": {"entry_not_found": "The associated config entry could not be found"}
+      }
+    },
+    "protocol_incompatible": {
+      "title": "Technology-system controller protocol is incompatible",
+      "description": "The controller returned a protocol response unsupported by this version. Confirm firmware compatibility, then choose Fix to reload the integration and try again.",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Try reconnecting to the controller",
+            "description": "After confirming firmware compatibility, submit to reload this integration.",
+            "data": {}
+          }
+        },
+        "abort": {"entry_not_found": "The associated config entry could not be found"}
       }
     }
   },

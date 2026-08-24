@@ -25,15 +25,28 @@
           "client_id": "协议客户端 ID",
           "tech_system_mac": "科技系统总控 MAC"
         }
+      },
+      "reauth_confirm": {
+        "title": "重新验证六恒科技系统主机",
+        "description": "主机拒绝了现有凭据。请输入本地主机账号和密码，验证成功后会自动重新加载此集成。",
+        "data": {
+          "username": "本地主机账号",
+          "password": "本地主机密码"
+        }
       }
     },
     "error": {
       "cannot_connect": "无法连接或登录主机，请检查地址、端口、账号和密码",
+      "handshake_failed": "主机未完成协议握手，请确认主机型号和端口 9000 服务",
+      "login_timeout": "主机登录响应超时，请检查主机状态和本地主机凭据",
+      "invalid_auth": "主机拒绝登录，请检查本地主机账号和密码",
+      "protocol_incompatible": "主机返回了当前集成不支持的协议响应",
       "invalid_config": "配置格式无效，请检查客户端 ID 和总控 MAC",
       "unknown": "发生未知错误，请查看 Home Assistant 日志"
     },
     "abort": {
-      "already_configured": "这台主机已经配置"
+      "already_configured": "这台主机已经配置",
+      "reauth_successful": "本地主机凭据已更新"
     }
   },
   "options": {
@@ -47,6 +60,36 @@
           "controller_silence_timeout": "主机静默重连时间（秒）",
           "thermostat_offline_after": "面板无上报离线时间（秒，0 表示关闭）"
         }
+      }
+    }
+  },
+  "issues": {
+    "login_timeout": {
+      "title": "六恒科技系统主机登录连续超时",
+      "description": "主机已连续 3 次未完成登录。请检查主机在线状态、端口 9000 和本地主机账号密码，然后点击“修复”重新验证凭据。",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "重新验证本地主机凭据",
+            "description": "点击提交后将打开此配置项的凭据验证流程。",
+            "data": {}
+          }
+        },
+        "abort": {"entry_not_found": "找不到关联的配置项"}
+      }
+    },
+    "protocol_incompatible": {
+      "title": "六恒科技系统主机协议不兼容",
+      "description": "主机返回了当前版本不支持的协议响应。请确认主机固件兼容性；修复后可重新加载集成并再次尝试连接。",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "重新尝试连接主机",
+            "description": "确认主机固件兼容后，点击提交以重新加载此集成。",
+            "data": {}
+          }
+        },
+        "abort": {"entry_not_found": "找不到关联的配置项"}
       }
     }
   },

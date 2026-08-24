@@ -70,6 +70,7 @@ from .protocol import (
 )
 from .health import HealthTracker
 from .runtime import ConnectionStage, FailureKind
+from .repairs import RepairManager
 from .thermostat_policy import room_thermostat_block_reason
 
 _LOGGER = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ class LinkingTempHub:
         self.room_names: dict[str, str] = {}
         self.filtered: dict[str, FilteredMeasurements] = {}
         self.health = health
+        self.repairs = RepairManager(hass, entry)
         self.connected = False
         self.protocol_verified = False
         self.protocol_status = "waiting"
@@ -147,6 +149,7 @@ class LinkingTempHub:
         )
         self._has_attempted_connection = False
         self._session_authenticated = False
+        self._reauth_required = False
 
     async def async_start(self) -> None:
         """Restore known panels and start the supervised TCP session."""
@@ -328,11 +331,14 @@ class LinkingTempHub:
                 client.on_stage = self._async_protocol_stage_received
                 client.on_parser_event = self._async_parser_event
                 self._session_authenticated = False
+                self._reauth_required = False
                 self._client = client
                 await client.connect()
                 self.connected = True
                 self.health.increment("connection_successes")
                 self.health.clear_failure()
+                await self.repairs.async_set_login_timeout(False)
+                await self.repairs.async_set_protocol_incompatible(False)
                 self.last_connection_error = "none"
                 retry_delay = 5
                 self._notify()
@@ -342,6 +348,14 @@ class LinkingTempHub:
                 raise ConnectionError("MC7021 TCP reader stopped")
             except asyncio.CancelledError:
                 raise
+            except AuthenticationRejected as error:
+                self._record_connection_failure(error)
+                self.last_connection_error = str(error) or error.__class__.__name__
+                self._reauth_required = True
+                _LOGGER.warning(
+                    "MC7021 rejected the configured credentials; reauthentication is required"
+                )
+                self.entry.async_start_reauth(self.hass)
             except (CannotConnect, ConnectionError, OSError, TimeoutError) as error:
                 self._record_connection_failure(error)
                 self.last_connection_error = str(error) or error.__class__.__name__
@@ -352,6 +366,8 @@ class LinkingTempHub:
                 )
             finally:
                 await self._async_disconnect()
+            if self._reauth_required:
+                return
             try:
                 await asyncio.wait_for(self._stop.wait(), retry_delay)
             except asyncio.TimeoutError:
@@ -401,6 +417,8 @@ class LinkingTempHub:
         elif isinstance(error, LoginTimeout):
             kind = FailureKind.LOGIN_TIMEOUT
             self.health.increment("login_failures")
+            if repairs := getattr(self, "repairs", None):
+                self._schedule_repair(repairs.async_set_login_timeout(True))
         elif isinstance(error, AuthenticationRejected):
             kind = FailureKind.AUTH_REJECTED
             self.health.increment("login_failures")
@@ -410,6 +428,8 @@ class LinkingTempHub:
                 self.health.increment("handshake_failures")
             elif self.health.stage is ConnectionStage.AUTHENTICATING:
                 self.health.increment("login_failures")
+            if repairs := getattr(self, "repairs", None):
+                self._schedule_repair(repairs.async_set_protocol_incompatible(True))
         elif "silent" in str(error).lower():
             kind = FailureKind.STATUS_SILENCE
         self.health.record_failure(
@@ -421,6 +441,15 @@ class LinkingTempHub:
                 "password": self.password,
                 "client_id": self.client_id,
             },
+        )
+
+    def _schedule_repair(self, coroutine: Any) -> None:
+        """Run issue updates without blocking the reconnect failure path."""
+        if not hasattr(self, "hass") or not hasattr(self, "entry"):
+            coroutine.close()
+            return
+        self.entry.async_create_background_task(
+            self.hass, coroutine, "linking-temp-connection-repair"
         )
 
     async def _async_session_loop(self, client: AsyncMoorgenClient) -> None:
