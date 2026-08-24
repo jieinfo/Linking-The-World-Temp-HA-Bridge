@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 import json
 import logging
@@ -108,6 +109,36 @@ class _LifecycleClient(_CommandClient):
 
     async def close(self) -> None:
         self.reader_alive = False
+
+
+class _ReconnectClient(_LifecycleClient):
+    """Programmable controller client for a real hub reconnect cycle."""
+
+    def __init__(
+        self,
+        attempt: int,
+        ready: list[asyncio.Event],
+        closed: list[asyncio.Event],
+    ) -> None:
+        super().__init__()
+        self.attempt = attempt
+        self.ready = ready[attempt - 1]
+        self.closed = closed[attempt - 1]
+
+    async def connect(self) -> None:
+        assert self.on_stage is not None
+        self.reader_alive = True
+        await self.on_stage("handshaking")
+        await self.on_stage("authenticating")
+        await self.on_stage("ready")
+        self.ready.set()
+
+    async def heartbeat(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        self.reader_alive = False
+        self.closed.set()
 
 
 def _ready_command_hub(hass, mock_config_entry) -> LinkingTempHub:
@@ -303,6 +334,62 @@ async def test_diagnostics_metrics_follow_real_runtime_event_paths(
         assert panel["last_report_age_seconds"] >= 0
         assert isinstance(panel["observed_absence_seconds"], float)
     assert "__dict__" not in json.dumps(result)
+
+
+async def test_diagnostics_connection_metrics_follow_real_reconnect_cycle(
+    hass, mock_config_entry, monkeypatch
+) -> None:
+    """A real hub run counts two authenticated sessions and one reconnect."""
+    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
+    await hub.panel_registry.async_load()
+    ready = [asyncio.Event(), asyncio.Event()]
+    closed = [asyncio.Event(), asyncio.Event()]
+    clients: list[_ReconnectClient] = []
+
+    def make_client(*_args) -> _ReconnectClient:
+        client = _ReconnectClient(len(clients) + 1, ready, closed)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(hub_module, "AsyncMoorgenClient", make_client)
+    real_wait_for = asyncio.wait_for
+
+    async def fast_hub_wait_for(awaitable, timeout):
+        """Keep hub retry and session polling deterministic and short."""
+        if timeout in {1, 5, 10, 20, 30}:
+            timeout = 0.01
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(hub_module.asyncio, "wait_for", fast_hub_wait_for)
+    run_task = asyncio.create_task(hub._async_run())
+    try:
+        await real_wait_for(ready[0].wait(), timeout=1)
+        clients[0].reader_alive = False
+        await real_wait_for(closed[0].wait(), timeout=1)
+
+        await real_wait_for(ready[1].wait(), timeout=1)
+        hub._stop.set()
+        await real_wait_for(run_task, timeout=1)
+        await real_wait_for(closed[1].wait(), timeout=1)
+    finally:
+        hub._stop.set()
+        if not run_task.done():
+            run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+
+    counters = hub.health.snapshot()["counters"]
+    assert counters["connection_attempts"] == 2
+    assert counters["connection_successes"] == 2
+    assert counters["reconnects"] == 1
+    assert counters["disconnects"] == 2
+    assert len(clients) == 2
+    assert all(client.reader_alive is False for client in clients)
+    assert not any(
+        task is not asyncio.current_task()
+        and not task.done()
+        and task.get_coro().__qualname__.endswith("_async_run")
+        for task in asyncio.all_tasks()
+    )
 
 
 async def test_anonymous_panel_labels_are_stable_within_one_export(
