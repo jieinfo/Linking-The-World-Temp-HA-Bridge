@@ -67,12 +67,11 @@
   "issues": {
     "login_timeout": {
       "title": "Technology-system controller login timed out repeatedly",
-      "description": "The controller has not completed login three times in a row. Check that it is online, TCP port 9000, and the local username and password, then choose Fix to verify the credentials.",
       "fix_flow": {
         "step": {
           "init": {
             "title": "Reauthenticate local controller credentials",
-            "description": "Submitting opens the credential verification flow for this config entry.",
+            "description": "The controller has not completed login three times in a row. Check that it is online, TCP port 9000, and the local username and password. Submitting opens the credential verification flow for this config entry.",
             "data": {}
           }
         },
@@ -81,12 +80,11 @@
     },
     "protocol_incompatible": {
       "title": "Technology-system controller protocol is incompatible",
-      "description": "The controller returned a protocol response unsupported by this version. Confirm firmware compatibility, then choose Fix to reload the integration and try again.",
       "fix_flow": {
         "step": {
           "init": {
             "title": "Try reconnecting to the controller",
-            "description": "After confirming firmware compatibility, submit to reload this integration.",
+            "description": "The controller returned a protocol response unsupported by this version. After confirming firmware compatibility, submit to reload this integration and try again.",
             "data": {}
           }
         },
@@ -95,12 +93,11 @@
     },
     "stale_panel": {
       "title": "Room thermostat panel has not reported for 30 days",
-      "description": "{room} ({short_mac}) has not sent a valid report since {last_report}. Confirming removal deletes only this integration's panel entities and stored panel record. Cancel leaves everything unchanged.",
       "fix_flow": {
         "step": {
           "confirm": {
             "title": "Remove stale room thermostat panel",
-            "description": "This action removes the stale panel from this integration. It does not delete Home Assistant automations. A future report from the same panel will be discovered again.",
+            "description": "{room} ({short_mac}) has not sent a valid report since {last_report}. This action removes only this integration's panel entities and stored panel record; it does not delete Home Assistant automations. Cancel leaves everything unchanged. A future report from the same panel will be discovered again.",
             "data": {}
           }
         },
