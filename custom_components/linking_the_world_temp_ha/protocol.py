@@ -425,8 +425,7 @@ class AsyncMoorgenClient:
         if reply.opcode == 6:
             return
         if any(
-            tag == 0x031C and value == b"\x01"
-            for tag, value in iter_tlvs(reply.body)
+            tag == 0x031C and value == b"\x01" for tag, value in iter_tlvs(reply.body)
         ):
             raise AuthenticationRejected("MC7021 rejected the supplied credentials")
         raise IncompatibleProtocol("MC7021 sent an unknown login rejection response")
@@ -499,9 +498,7 @@ class AsyncMoorgenClient:
         if result is not None:
             await result
 
-    async def _emit_parser_changes(
-        self, before: tuple[int, int, int, int]
-    ) -> None:
+    async def _emit_parser_changes(self, before: tuple[int, int, int, int]) -> None:
         """Report parser counters only, never the bytes that produced them."""
         if self.on_parser_event is None:
             return
@@ -512,7 +509,12 @@ class AsyncMoorgenClient:
             self._decoder.bytes_discarded,
         )
         for name, change in zip(
-            ("frames_decoded", "frames_malformed", "frames_resynchronized", "bytes_discarded"),
+            (
+                "frames_decoded",
+                "frames_malformed",
+                "frames_resynchronized",
+                "bytes_discarded",
+            ),
             (current - previous for current, previous in zip(after, before)),
             strict=True,
         ):
@@ -531,12 +533,12 @@ class AsyncMoorgenClient:
     async def _send_initial_queries(self) -> None:
         for category in (0x0B, 0x1F, 0x01, 0x11, 0x09, 0x0D, 0x03, 0x07, 0x1B):
             await self._send(3, 7, tlv(0x000F, bytes((category,))))
+            await asyncio.sleep(0.15)
         await self._send(
             3,
             7,
             tlv(0x000F, b"\x17") + tlv(0x0077, self.client_id.encode("ascii")),
         )
-        await self.request_status()
 
     async def _send(
         self,

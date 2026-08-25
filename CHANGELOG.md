@@ -1,5 +1,13 @@
 # Linking The World Temp HA changelog
 
+## 1.0.1 - Official client behavior alignment
+
+- 命令发送后优先等待 MC7021 主动状态上报；默认 1 秒内未确认时，才发送状态查询作为兜底。
+- 多条待确认命令共享一次状态查询，保留后续轮询、8 秒确认超时和温度命令单次重试。
+- 登录后的初始化查询之间增加 150ms 间隔，降低旧固件及多客户端并发时的瞬时压力。
+- 诊断新增主动上报确认、查询后确认和兜底查询计数，便于区分主机推送延迟与控制失败。
+- 新增由授权抓包派生的脱敏官方中控屏协议帧回归测试，不保存地址、账号或家庭标识。
+
 ## 1.0.0 - Native integration stable release preparation
 
 - 将原生 HACS 集成版本设为 `1.0.0`，最低 Home Assistant 版本设为 `2026.8.0`。

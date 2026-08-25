@@ -30,7 +30,10 @@ from custom_components.linking_the_world_temp_ha.runtime import (
     ConnectionStage,
     FailureKind,
 )
-from custom_components.linking_the_world_temp_ha.sensor import DIAGNOSTICS, DiagnosticSensor
+from custom_components.linking_the_world_temp_ha.sensor import (
+    DIAGNOSTICS,
+    DiagnosticSensor,
+)
 
 
 async def _hub_with_two_panels(hass, mock_config_entry) -> LinkingTempHub:
@@ -170,7 +173,9 @@ async def test_production_command_logs_never_expose_panel_identity(
     hub = _ready_command_hub(hass, mock_config_entry)
     client = _CommandClient()
     hub._client = client  # type: ignore[assignment]
-    caplog.set_level(logging.DEBUG, logger="custom_components.linking_the_world_temp_ha")
+    caplog.set_level(
+        logging.DEBUG, logger="custom_components.linking_the_world_temp_ha"
+    )
     invalid_measurement = (
         tlv(0x0004, bytes.fromhex("aabbccddeeff0011"))
         + tlv(0x0075, hub.tech_system_mac)
@@ -235,8 +240,12 @@ async def test_diagnostics_redact_all_secret_canaries_and_anonymize_panels(
     hub = await _hub_with_two_panels(hass, mock_config_entry)
     hub.controller_public_key = canaries["public_key"]
     hub.session_token = canaries["token"]
-    hub.last_connection_error = f"error host={canaries['host']} body={canaries['raw_body']}"
-    hub.last_command_status = f"waiting:{canaries['room_name']} mac={canaries['panel_mac']}"
+    hub.last_connection_error = (
+        f"error host={canaries['host']} body={canaries['raw_body']}"
+    )
+    hub.last_command_status = (
+        f"waiting:{canaries['room_name']} mac={canaries['panel_mac']}"
+    )
     hub.health.mark_stage(ConnectionStage.READY)
     hub.health.record_failure(
         FailureKind.TCP_TIMEOUT,
@@ -264,7 +273,9 @@ async def test_diagnostics_metrics_follow_real_runtime_event_paths(
     hub = _ready_command_hub(hass, mock_config_entry)
     await hub.panel_registry.async_load()
     lifecycle_client = _LifecycleClient()
-    monkeypatch.setattr(hub_module, "AsyncMoorgenClient", lambda *_args: lifecycle_client)
+    monkeypatch.setattr(
+        hub_module, "AsyncMoorgenClient", lambda *_args: lifecycle_client
+    )
 
     async def stop_after_connect(_client) -> None:
         hub._stop.set()
@@ -334,6 +345,46 @@ async def test_diagnostics_metrics_follow_real_runtime_event_paths(
         assert panel["last_report_age_seconds"] >= 0
         assert isinstance(panel["observed_absence_seconds"], float)
     assert "__dict__" not in json.dumps(result)
+
+
+async def test_command_confirmation_prefers_push_before_status_query(
+    hass, mock_config_entry
+) -> None:
+    """A normal fast controller push avoids an extra status request."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+
+    await hub.async_set_system_power(True)
+
+    assert client.status_requests == 0
+    hub._confirm_pending("system", {"power": "ON"})
+    counters = hub.health.snapshot()["counters"]
+    assert counters["commands_confirmed_by_push"] == 1
+    assert counters["commands_confirmed_after_query"] == 0
+    assert counters["status_fallback_queries"] == 0
+
+
+async def test_unconfirmed_command_uses_one_shared_status_query_fallback(
+    hass, mock_config_entry
+) -> None:
+    """Only commands which outlive the push grace period trigger a query."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+
+    await hub.async_set_system_power(True)
+    pending = hub._pending["system"]
+    await hub._async_poll_pending_status(pending.next_status_poll_at - 0.001)
+    assert client.status_requests == 0
+
+    await hub._async_poll_pending_status(pending.next_status_poll_at + 0.001)
+    assert client.status_requests == 1
+    hub._confirm_pending("system", {"power": "ON"})
+    counters = hub.health.snapshot()["counters"]
+    assert counters["commands_confirmed_by_push"] == 0
+    assert counters["commands_confirmed_after_query"] == 1
+    assert counters["status_fallback_queries"] == 1
 
 
 async def test_diagnostics_connection_metrics_follow_real_reconnect_cycle(
@@ -419,8 +470,14 @@ async def test_diagnostic_entities_remain_available_and_use_safe_stable_states(
     hub.health.record_failure(FailureKind.AUTH_REJECTED, "credentials rejected")
 
     descriptions = {description.key: description for description in DIAGNOSTICS}
-    assert DiagnosticSensor(hub, descriptions["connection_stage"]).native_value == "authenticating"
-    assert DiagnosticSensor(hub, descriptions["connection_error"]).native_value == "authentication_rejected"
+    assert (
+        DiagnosticSensor(hub, descriptions["connection_stage"]).native_value
+        == "authenticating"
+    )
+    assert (
+        DiagnosticSensor(hub, descriptions["connection_error"]).native_value
+        == "authentication_rejected"
+    )
     assert DiagnosticSensor(hub, descriptions["last_command"]).native_value == "timeout"
     assert DiagnosticSensor(hub, descriptions["connection_stage"]).available
     assert DiagnosticSensor(hub, descriptions["connection_error"]).available
