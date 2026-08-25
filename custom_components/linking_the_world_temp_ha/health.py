@@ -87,6 +87,10 @@ class HealthTracker:
         self._stage_history: deque[dict[str, str]] = deque(maxlen=history_size)
         self._failure_history: deque[dict[str, str]] = deque(maxlen=history_size)
         self._confirmation_latencies: deque[float] = deque(maxlen=latency_size)
+        self._current_command_queue_depth = 0
+        self._peak_command_queue_depth = 0
+        self._consecutive_command_timeouts = 0
+        self._command_timeout_recoveries = 0
 
     def increment(self, name: str, value: int = 1) -> None:
         """Increment one named counter without retaining event payloads."""
@@ -117,6 +121,26 @@ class HealthTracker:
         """Track a bounded summary of command acknowledgement delays."""
         self._confirmation_latencies.append(round(max(0.0, float(seconds)), 3))
 
+    def record_command_queue_depth(self, depth: int) -> None:
+        """Track current and peak in-memory command pressure."""
+        self._current_command_queue_depth = max(0, int(depth))
+        self._peak_command_queue_depth = max(
+            self._peak_command_queue_depth, self._current_command_queue_depth
+        )
+
+    def record_final_command_timeout(self) -> int:
+        """Count one command that exhausted every recovery path."""
+        self._consecutive_command_timeouts += 1
+        return self._consecutive_command_timeouts
+
+    def record_command_confirmation(self) -> bool:
+        """Reset final failures and report whether this is a recovery."""
+        if not self._consecutive_command_timeouts:
+            return False
+        self._consecutive_command_timeouts = 0
+        self._command_timeout_recoveries += 1
+        return True
+
     def mark_stage(self, stage: ConnectionStage) -> None:
         """Record the current lifecycle stage, retaining a bounded history."""
         self.stage = stage
@@ -139,5 +163,11 @@ class HealthTracker:
                 "minimum": min(latencies) if latencies else None,
                 "maximum": max(latencies) if latencies else None,
                 "mean": round(fmean(latencies), 3) if latencies else None,
+            },
+            "command_runtime": {
+                "current_queue_depth": self._current_command_queue_depth,
+                "peak_queue_depth": self._peak_command_queue_depth,
+                "consecutive_timeouts": self._consecutive_command_timeouts,
+                "recoveries": self._command_timeout_recoveries,
             },
         }

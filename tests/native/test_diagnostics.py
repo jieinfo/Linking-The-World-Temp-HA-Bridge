@@ -80,7 +80,16 @@ class _CommandClient:
         self.commands: list[tuple[bytes, int, int | None]] = []
         self.status_requests = 0
 
-    async def send_command(self, mac: bytes, command: int, value: int | None) -> None:
+    async def send_command(
+        self,
+        mac: bytes,
+        command: int,
+        value: int | None,
+        *,
+        before_write=None,
+    ) -> None:
+        if before_write is not None:
+            before_write()
         self.commands.append((mac, command, value))
         if self.fail_send:
             raise ConnectionError("send failed")
@@ -164,6 +173,115 @@ def _ready_command_hub(hass, mock_config_entry) -> LinkingTempHub:
     }
     hub.room_names["ROOM-ID-CANARY"] = "ROOM-NAME-CANARY"
     return hub
+
+
+async def test_queued_mode_is_revalidated_after_power_changes(
+    hass, mock_config_entry
+) -> None:
+    """A queued mode command cannot cross the controller's power interlock."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "cool"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_mode("heat")
+    hub.state.power = "ON"
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+
+    assert [command[1:] for command in client.commands] == [(4, 0)]
+    assert "system" not in hub._pending
+    assert "system" not in hub._queued
+    assert hub.health.snapshot()["counters"]["commands_blocked"] == 1
+
+
+async def test_queued_humidifier_is_revalidated_after_mode_changes(
+    hass, mock_config_entry
+) -> None:
+    """A queued humidifier command cannot leave heat mode before dispatch."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "heat"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_winter_humidifier(True)
+    hub.state.mode = "cool"
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+
+    assert [command[1:] for command in client.commands] == [(4, 0)]
+    assert "system" not in hub._pending
+    assert "system" not in hub._queued
+    assert hub.health.snapshot()["counters"]["commands_blocked"] == 1
+
+
+async def test_total_control_queue_drops_reversal_to_verified_state(
+    hass, mock_config_entry
+) -> None:
+    """A latest intent equal to verified state removes its stale queued opposite."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_system_power(True)
+    await hub.async_set_system_power(False)
+
+    assert "system" not in hub._queued
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+    assert [command[1:] for command in client.commands] == [(4, 0)]
+
+
+async def test_later_power_on_does_not_block_earlier_queued_mode(
+    hass, mock_config_entry
+) -> None:
+    """Dispatch guards respect queue order instead of inspecting later intents."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "cool"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_mode("heat")
+    await hub.async_set_system_power(True)
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+
+    assert hub._pending["system"].expected == {"mode": "heat"}
+    assert [command.expected for command in hub._queued["system"]] == [
+        {"power": "ON"}
+    ]
+    assert [command[1:] for command in client.commands] == [(4, 0), (3, 2)]
+
+
+async def test_later_mode_change_does_not_block_earlier_queued_humidifier(
+    hass, mock_config_entry
+) -> None:
+    """A valid humidifier intent runs before a later departure from heat mode."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "heat"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_winter_humidifier(True)
+    await hub.async_set_mode("cool")
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+
+    assert hub._pending["system"].expected == {"winter_humidifier": "ON"}
+    assert [command.expected for command in hub._queued["system"]] == [
+        {"mode": "cool"}
+    ]
+    assert [command[1:] for command in client.commands] == [(4, 0), (5, 1)]
 
 
 async def test_production_command_logs_never_expose_panel_identity(
@@ -363,6 +481,83 @@ async def test_command_confirmation_prefers_push_before_status_query(
     assert counters["commands_confirmed_by_push"] == 1
     assert counters["commands_confirmed_after_query"] == 0
     assert counters["status_fallback_queries"] == 0
+
+
+async def test_command_health_tracks_queue_peak_final_timeouts_and_recovery(
+    hass, mock_config_entry
+) -> None:
+    """Diagnostics distinguish queued load, repeated failures, and recovery."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+
+    await hub.async_set_system_power(True)
+    await hub.async_set_scene("away")
+    snapshot = hub.health.snapshot()["command_runtime"]
+    assert snapshot["current_queue_depth"] == 2
+    assert snapshot["peak_queue_depth"] == 2
+
+    for _ in range(3):
+        hub._pending["system"].deadline = 0
+        await hub._async_expire_pending(1)
+        await hub._async_dispatch_queued()
+        if "system" not in hub._pending:
+            await hub.async_set_system_power(True)
+
+    snapshot = hub.health.snapshot()["command_runtime"]
+    assert snapshot["consecutive_timeouts"] == 3
+    assert snapshot["recoveries"] == 0
+
+    hub._confirm_pending("system", {"power": "ON"})
+    snapshot = hub.health.snapshot()["command_runtime"]
+    assert snapshot["consecutive_timeouts"] == 0
+    assert snapshot["recoveries"] == 1
+
+
+async def test_final_command_timeout_logs_escalate_only_after_repetition(
+    hass, mock_config_entry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One-off controller delays warn; a third consecutive failure is an error."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    hub._client = _CommandClient()  # type: ignore[assignment]
+    caplog.set_level(logging.INFO, logger="custom_components.linking_the_world_temp_ha")
+
+    for _ in range(3):
+        await hub.async_set_system_power(True)
+        hub._pending["system"].deadline = 0
+        await hub._async_expire_pending(1)
+
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("MC7021 command confirmation timed out")
+    ]
+    assert [record.levelno for record in records] == [
+        logging.WARNING,
+        logging.WARNING,
+        logging.ERROR,
+    ]
+
+
+async def test_superseded_timeout_is_an_info_recovery_event(
+    hass, mock_config_entry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A timed-out intermediate value with a queued replacement is not an error."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    hub._client = _CommandClient()  # type: ignore[assignment]
+    caplog.set_level(logging.INFO, logger="custom_components.linking_the_world_temp_ha")
+
+    await hub.async_set_thermostat_temperature("aabbccddeeff0011", 22)
+    await hub.async_set_thermostat_temperature("aabbccddeeff0011", 23)
+    hub._pending["thermostat_aabbccddeeff0011"].deadline = 0
+    await hub._async_expire_pending(1)
+
+    record = next(
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Command confirmation timed out; continuing")
+    )
+    assert record.levelno == logging.INFO
 
 
 async def test_unconfirmed_command_uses_one_shared_status_query_fallback(

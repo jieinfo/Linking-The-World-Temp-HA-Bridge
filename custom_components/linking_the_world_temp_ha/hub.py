@@ -237,6 +237,56 @@ class LinkingTempHub:
         room_name = self.room_names.get(thermostat.room_id, thermostat.room_id)
         return f"{room_name or thermostat.mac.hex()} 温控面板"
 
+    @property
+    def can_change_system_mode(self) -> bool:
+        """Project confirmed and earlier queued power intent into the mode interlock."""
+        if not self.state.can_change_mode:
+            return False
+        commands = [
+            command
+            for command in (
+                self._pending.get("system"),
+                *self._queued.get("system", ()),
+            )
+            if command is not None
+        ]
+        return not any(command.expected.get("power") == "ON" for command in commands)
+
+    def _mode_change_block_reason(self) -> str | None:
+        if not self.can_change_system_mode:
+            return "请先关闭科技系统，再切换运行模式"
+        return None
+
+    def _mode_dispatch_block_reason(self) -> str | None:
+        """Revalidate confirmed state without inspecting later queued intents."""
+        if not self.state.can_change_mode:
+            return "请先关闭科技系统，再切换运行模式"
+        return None
+
+    def _winter_humidifier_block_reason(self) -> str | None:
+        if self.state.mode != "heat":
+            return "冬季加湿仅能在制热模式下使用"
+        commands = [
+            command
+            for command in (
+                self._pending.get("system"),
+                *self._queued.get("system", ()),
+            )
+            if command is not None
+        ]
+        if any(
+            (mode := command.expected.get("mode")) is not None and mode != "heat"
+            for command in commands
+        ):
+            return "科技系统正在离开制热模式，冬季加湿不能操作"
+        return None
+
+    def _winter_humidifier_dispatch_block_reason(self) -> str | None:
+        """Revalidate confirmed mode without blocking on later queue entries."""
+        if self.state.mode != "heat":
+            return "冬季加湿仅能在制热模式下使用"
+        return None
+
     async def async_set_system_power(self, enabled: bool) -> None:
         await self._async_send_tracked(
             "system",
@@ -244,11 +294,12 @@ class LinkingTempHub:
             {"power": "ON" if enabled else "OFF"},
             self.tech_system_mac,
             COMMAND_POWER_ON if enabled else COMMAND_POWER_OFF,
+            coalesce=True,
         )
 
     async def async_set_mode(self, mode: str) -> None:
-        if not self.state.can_change_mode:
-            raise HomeAssistantError("请先关闭科技系统，再切换运行模式")
+        if reason := self._mode_change_block_reason():
+            raise HomeAssistantError(reason)
         if mode not in MODE_VALUES:
             raise HomeAssistantError(f"不支持的运行模式: {mode}")
         await self._async_send_tracked(
@@ -258,6 +309,8 @@ class LinkingTempHub:
             self.tech_system_mac,
             COMMAND_MODE,
             MODE_VALUES[mode],
+            coalesce=True,
+            send_guard=self._mode_dispatch_block_reason,
         )
 
     async def async_set_scene(self, scene: str) -> None:
@@ -270,11 +323,12 @@ class LinkingTempHub:
             self.tech_system_mac,
             COMMAND_SCENE,
             SCENE_VALUES[scene],
+            coalesce=True,
         )
 
     async def async_set_winter_humidifier(self, enabled: bool) -> None:
-        if self.state.mode != "heat":
-            raise HomeAssistantError("冬季加湿仅能在制热模式下使用")
+        if reason := self._winter_humidifier_block_reason():
+            raise HomeAssistantError(reason)
         await self._async_send_tracked(
             "system",
             "冬季加湿",
@@ -282,6 +336,8 @@ class LinkingTempHub:
             self.tech_system_mac,
             COMMAND_WINTER_HUMIDIFIER,
             1 if enabled else 0,
+            coalesce=True,
+            send_guard=self._winter_humidifier_dispatch_block_reason,
         )
 
     async def async_set_thermostat_power(self, mac_hex: str, enabled: bool) -> None:
@@ -324,6 +380,7 @@ class LinkingTempHub:
                 self._queued[target] = retained
             else:
                 self._queued.pop(target, None)
+            self._record_command_queue_depth()
             self.last_command_status = f"confirmed:{label}"
             self._notify()
             return True
@@ -365,6 +422,19 @@ class LinkingTempHub:
     def _command_target_type(target: str) -> str:
         """Return a stable command category without household identity."""
         return "thermostat" if target.startswith("thermostat_") else "system"
+
+    def _record_command_queue_depth(self) -> None:
+        """Publish bounded command pressure without retaining command details."""
+        health = getattr(self, "health", None)
+        if health is None:
+            return
+        health.record_command_queue_depth(
+            len(self._pending) + sum(len(commands) for commands in self._queued.values())
+        )
+
+    def _matches_verified_system_state(self, expected: dict[str, str]) -> bool:
+        """Return whether one total-control intent already matches verified state."""
+        return all(getattr(self.state, key, None) == value for key, value in expected.items())
 
     async def _async_run(self) -> None:
         retry_delay = 5
@@ -622,6 +692,7 @@ class LinkingTempHub:
         self.filtered.clear()
         self._pending.clear()
         self._queued.clear()
+        self._record_command_queue_depth()
         if client is not None:
             await client.close()
         self._notify()
@@ -687,6 +758,16 @@ class LinkingTempHub:
                 )
             pending = self._pending[target]
             queued = coalesce_queued(pending, self._queued.get(target, ()), replacement)
+            if (
+                target == "system"
+                and command_intent(pending.expected) != command_intent(expected)
+                and self._matches_verified_system_state(expected)
+            ):
+                queued = [
+                    queued_command
+                    for queued_command in queued
+                    if command_intent(queued_command.expected) != command_intent(expected)
+                ]
             if queued:
                 self._queued[target] = queued
                 self.last_command_status = f"queued:{label}"
@@ -694,14 +775,34 @@ class LinkingTempHub:
             else:
                 self._queued.pop(target, None)
                 self.last_command_status = f"waiting:{pending.label}"
+            self._record_command_queue_depth()
             self._notify()
             return
         if coalesce and not from_queue and self._queued.get(target):
-            self._queued[target] = coalesce_queued(
+            queued = coalesce_queued(
                 None, self._queued[target], replacement
             )
+            if target == "system" and self._matches_verified_system_state(expected):
+                queued = [
+                    queued_command
+                    for queued_command in queued
+                    if command_intent(queued_command.expected) != command_intent(expected)
+                ]
+            if not queued:
+                self._queued.pop(target, None)
+                self.last_command_status = f"confirmed:{label}"
+                self._record_command_queue_depth()
+                self._notify()
+                return
+            self._queued[target] = queued
             self.last_command_status = f"queued:{label}"
             self.health.increment("commands_coalesced")
+            self._record_command_queue_depth()
+            self._notify()
+            return
+        if target == "system" and self._matches_verified_system_state(expected):
+            self.last_command_status = f"confirmed:{label}"
+            self._record_command_queue_depth()
             self._notify()
             return
         now = time.monotonic()
@@ -723,6 +824,7 @@ class LinkingTempHub:
             value,
         )
         self._pending[target] = pending
+        self._record_command_queue_depth()
         self.last_command_status = f"waiting:{label}"
         self._notify()
         try:
@@ -739,6 +841,7 @@ class LinkingTempHub:
             self._last_command_at = time.monotonic()
         except Exception:
             self._pending.pop(target, None)
+            self._record_command_queue_depth()
             self.last_command_status = f"failed:{label}"
             _LOGGER.warning(
                 "MC7021 command send failed: target_type=%s command_code=%d attempt=1",
@@ -757,6 +860,7 @@ class LinkingTempHub:
             queued = self._queued[target].pop(0)
             if not self._queued[target]:
                 self._queued.pop(target, None)
+            self._record_command_queue_depth()
             try:
                 await self._async_send_tracked_locked(
                     queued.target,
@@ -813,6 +917,7 @@ class LinkingTempHub:
         ):
             return
         self._pending.pop(target, None)
+        self._record_command_queue_depth()
         self.last_command_status = f"confirmed:{pending.label}"
         self.health.increment("commands_confirmed")
         self.health.increment(
@@ -821,6 +926,8 @@ class LinkingTempHub:
             else "commands_confirmed_by_push"
         )
         self.health.record_confirmation_latency(time.monotonic() - pending.sent_at)
+        self.health.record_command_confirmation()
+        self.repairs.set_command_timeout(False)
 
     async def _async_expire_pending(self, now: float) -> None:
         """Advance queued commands, retry setpoints once, or report final failure."""
@@ -843,7 +950,7 @@ class LinkingTempHub:
                     self._pending.pop(target, None)
                     self.health.increment("commands_timed_out")
                     self.last_command_status = f"timeout_continuing:{pending.label}"
-                    _LOGGER.warning(
+                    _LOGGER.info(
                         "Command confirmation timed out; continuing a newer queued "
                         "intent: target_type=%s command_code=%d attempt=%d "
                         "elapsed_seconds=%.1f confirmation_timeout_seconds=%.1f",
@@ -860,16 +967,21 @@ class LinkingTempHub:
                     self._pending.pop(target, None)
                     self.health.increment("commands_timed_out")
                     self.last_command_status = f"timeout:{pending.label}"
-                    _LOGGER.error(
+                    consecutive_timeouts = self.health.record_final_command_timeout()
+                    self.repairs.set_command_timeout(True)
+                    log = _LOGGER.error if consecutive_timeouts >= 3 else _LOGGER.warning
+                    log(
                         "MC7021 command confirmation timed out: target_type=%s "
                         "command_code=%d attempt=%d elapsed_seconds=%.1f "
-                        "confirmation_timeout_seconds=%.1f",
+                        "confirmation_timeout_seconds=%.1f consecutive_timeouts=%d",
                         self._command_target_type(target),
                         pending.command,
                         pending.attempts,
                         now - pending.sent_at,
                         self.command_confirmation_timeout,
+                        consecutive_timeouts,
                     )
+                self._record_command_queue_depth()
         if expired:
             self._notify()
 
