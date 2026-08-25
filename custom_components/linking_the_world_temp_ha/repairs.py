@@ -106,7 +106,7 @@ class RepairManager:
             self._command_timeout_issue_id,
             data={"entry_id": self.entry.entry_id},
             is_fixable=False,
-            severity=ir.IssueSeverity.WARNING,
+            severity=ir.IssueSeverity.ERROR,
             translation_key="command_timeout",
         )
 

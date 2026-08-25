@@ -600,18 +600,13 @@ async def test_mode_select_remains_available_but_locks_options_while_system_runs
 
 
 async def test_mode_select_locks_while_power_on_is_queued(
-    hass, mock_config_entry
+    hass, setup_integration, fake_controller
 ) -> None:
     """The mode UI accounts for an earlier queued power-on intent."""
-    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
-    hub.connected = True
-    hub.protocol_verified = True
-    hub.health.mark_stage(ConnectionStage.READY)
-    hub.allow_control = True
+    hub = setup_integration.hub
     hub.command_min_interval = 0
-    hub._client = _CommandClient()  # type: ignore[assignment]
-    hub.state.power = "OFF"
-    hub.state.mode = "cool"
+    await fake_controller.async_send_status(_system_status(hub, power=False, mode=1))
+    await _wait_for(lambda: hub.available and hub.state.mode == "cool")
     entity = SystemModeSelect(hub)
 
     await hub.async_set_scene("away")

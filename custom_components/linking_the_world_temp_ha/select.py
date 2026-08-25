@@ -21,7 +21,7 @@ class SystemModeSelect(LinkingTempEntity, SelectEntity):
     @property
     def options(self) -> list[str]:
         """Keep the entity online while hiding actions the controller rejects."""
-        if not self.hub.state.can_change_mode and (current := self.current_option):
+        if not self.hub.can_change_system_mode and (current := self.current_option):
             return [current]
         return list(MODE_BY_LABEL)
 
@@ -32,9 +32,9 @@ class SystemModeSelect(LinkingTempEntity, SelectEntity):
     @property
     def extra_state_attributes(self) -> dict[str, str | bool]:
         return {
-            "can_change_mode": self.hub.state.can_change_mode,
+            "can_change_mode": self.hub.can_change_system_mode,
             "提示": "请先关闭科技系统再切换模式"
-            if not self.hub.state.can_change_mode
+            if not self.hub.can_change_system_mode
             else "可以切换模式",
         }
 

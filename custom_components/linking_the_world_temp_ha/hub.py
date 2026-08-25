@@ -237,6 +237,44 @@ class LinkingTempHub:
         room_name = self.room_names.get(thermostat.room_id, thermostat.room_id)
         return f"{room_name or thermostat.mac.hex()} 温控面板"
 
+    @property
+    def can_change_system_mode(self) -> bool:
+        """Project confirmed and earlier queued power intent into the mode interlock."""
+        if not self.state.can_change_mode:
+            return False
+        commands = [
+            command
+            for command in (
+                self._pending.get("system"),
+                *self._queued.get("system", ()),
+            )
+            if command is not None
+        ]
+        return not any(command.expected.get("power") == "ON" for command in commands)
+
+    def _mode_change_block_reason(self) -> str | None:
+        if not self.can_change_system_mode:
+            return "请先关闭科技系统，再切换运行模式"
+        return None
+
+    def _winter_humidifier_block_reason(self) -> str | None:
+        if self.state.mode != "heat":
+            return "冬季加湿仅能在制热模式下使用"
+        commands = [
+            command
+            for command in (
+                self._pending.get("system"),
+                *self._queued.get("system", ()),
+            )
+            if command is not None
+        ]
+        if any(
+            (mode := command.expected.get("mode")) is not None and mode != "heat"
+            for command in commands
+        ):
+            return "科技系统正在离开制热模式，冬季加湿不能操作"
+        return None
+
     async def async_set_system_power(self, enabled: bool) -> None:
         await self._async_send_tracked(
             "system",
@@ -248,8 +286,8 @@ class LinkingTempHub:
         )
 
     async def async_set_mode(self, mode: str) -> None:
-        if not self.state.can_change_mode:
-            raise HomeAssistantError("请先关闭科技系统，再切换运行模式")
+        if reason := self._mode_change_block_reason():
+            raise HomeAssistantError(reason)
         if mode not in MODE_VALUES:
             raise HomeAssistantError(f"不支持的运行模式: {mode}")
         await self._async_send_tracked(
@@ -260,6 +298,7 @@ class LinkingTempHub:
             COMMAND_MODE,
             MODE_VALUES[mode],
             coalesce=True,
+            send_guard=self._mode_change_block_reason,
         )
 
     async def async_set_scene(self, scene: str) -> None:
@@ -276,8 +315,8 @@ class LinkingTempHub:
         )
 
     async def async_set_winter_humidifier(self, enabled: bool) -> None:
-        if self.state.mode != "heat":
-            raise HomeAssistantError("冬季加湿仅能在制热模式下使用")
+        if reason := self._winter_humidifier_block_reason():
+            raise HomeAssistantError(reason)
         await self._async_send_tracked(
             "system",
             "冬季加湿",
@@ -286,6 +325,7 @@ class LinkingTempHub:
             COMMAND_WINTER_HUMIDIFIER,
             1 if enabled else 0,
             coalesce=True,
+            send_guard=self._winter_humidifier_block_reason,
         )
 
     async def async_set_thermostat_power(self, mac_hex: str, enabled: bool) -> None:
@@ -379,6 +419,10 @@ class LinkingTempHub:
         health.record_command_queue_depth(
             len(self._pending) + sum(len(commands) for commands in self._queued.values())
         )
+
+    def _matches_verified_system_state(self, expected: dict[str, str]) -> bool:
+        """Return whether one total-control intent already matches verified state."""
+        return all(getattr(self.state, key, None) == value for key, value in expected.items())
 
     async def _async_run(self) -> None:
         retry_delay = 5
@@ -702,6 +746,16 @@ class LinkingTempHub:
                 )
             pending = self._pending[target]
             queued = coalesce_queued(pending, self._queued.get(target, ()), replacement)
+            if (
+                target == "system"
+                and command_intent(pending.expected) != command_intent(expected)
+                and self._matches_verified_system_state(expected)
+            ):
+                queued = [
+                    queued_command
+                    for queued_command in queued
+                    if command_intent(queued_command.expected) != command_intent(expected)
+                ]
             if queued:
                 self._queued[target] = queued
                 self.last_command_status = f"queued:{label}"
@@ -713,11 +767,29 @@ class LinkingTempHub:
             self._notify()
             return
         if coalesce and not from_queue and self._queued.get(target):
-            self._queued[target] = coalesce_queued(
+            queued = coalesce_queued(
                 None, self._queued[target], replacement
             )
+            if target == "system" and self._matches_verified_system_state(expected):
+                queued = [
+                    queued_command
+                    for queued_command in queued
+                    if command_intent(queued_command.expected) != command_intent(expected)
+                ]
+            if not queued:
+                self._queued.pop(target, None)
+                self.last_command_status = f"confirmed:{label}"
+                self._record_command_queue_depth()
+                self._notify()
+                return
+            self._queued[target] = queued
             self.last_command_status = f"queued:{label}"
             self.health.increment("commands_coalesced")
+            self._record_command_queue_depth()
+            self._notify()
+            return
+        if target == "system" and self._matches_verified_system_state(expected):
+            self.last_command_status = f"confirmed:{label}"
             self._record_command_queue_depth()
             self._notify()
             return

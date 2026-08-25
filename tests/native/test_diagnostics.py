@@ -191,7 +191,7 @@ async def test_queued_mode_is_revalidated_after_power_changes(
     hub._confirm_pending("system", {"scene": "away"})
     await hub._async_dispatch_queued()
 
-    assert [command[1:] for command in client.commands] == [(4, 1)]
+    assert [command[1:] for command in client.commands] == [(4, 0)]
     assert "system" not in hub._pending
     assert "system" not in hub._queued
     assert hub.health.snapshot()["counters"]["commands_blocked"] == 1
@@ -213,7 +213,7 @@ async def test_queued_humidifier_is_revalidated_after_mode_changes(
     hub._confirm_pending("system", {"scene": "away"})
     await hub._async_dispatch_queued()
 
-    assert [command[1:] for command in client.commands] == [(4, 1)]
+    assert [command[1:] for command in client.commands] == [(4, 0)]
     assert "system" not in hub._pending
     assert "system" not in hub._queued
     assert hub.health.snapshot()["counters"]["commands_blocked"] == 1
@@ -235,7 +235,7 @@ async def test_total_control_queue_drops_reversal_to_verified_state(
     assert "system" not in hub._queued
     hub._confirm_pending("system", {"scene": "away"})
     await hub._async_dispatch_queued()
-    assert [command[1:] for command in client.commands] == [(4, 1)]
+    assert [command[1:] for command in client.commands] == [(4, 0)]
 
 
 async def test_production_command_logs_never_expose_panel_identity(
