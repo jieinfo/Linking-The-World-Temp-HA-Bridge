@@ -91,6 +91,10 @@
         "abort": {"entry_not_found": "The associated config entry could not be found"}
       }
     },
+    "command_timeout": {
+      "title": "Technology-system commands were not confirmed repeatedly",
+      "description": "The controller did not confirm three consecutive commands. Check connection stability, avoid reusing one account across clients, and review command queue and confirmation counters in integration diagnostics. The issue clears after the next confirmed command."
+    },
     "stale_panel": {
       "title": "Room thermostat panel has not reported for 30 days",
       "fix_flow": {

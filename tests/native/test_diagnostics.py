@@ -396,6 +396,52 @@ async def test_command_health_tracks_queue_peak_final_timeouts_and_recovery(
     assert snapshot["recoveries"] == 1
 
 
+async def test_final_command_timeout_logs_escalate_only_after_repetition(
+    hass, mock_config_entry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One-off controller delays warn; a third consecutive failure is an error."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    hub._client = _CommandClient()  # type: ignore[assignment]
+    caplog.set_level(logging.INFO, logger="custom_components.linking_the_world_temp_ha")
+
+    for _ in range(3):
+        await hub.async_set_system_power(True)
+        hub._pending["system"].deadline = 0
+        await hub._async_expire_pending(1)
+
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("MC7021 command confirmation timed out")
+    ]
+    assert [record.levelno for record in records] == [
+        logging.WARNING,
+        logging.WARNING,
+        logging.ERROR,
+    ]
+
+
+async def test_superseded_timeout_is_an_info_recovery_event(
+    hass, mock_config_entry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A timed-out intermediate value with a queued replacement is not an error."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    hub._client = _CommandClient()  # type: ignore[assignment]
+    caplog.set_level(logging.INFO, logger="custom_components.linking_the_world_temp_ha")
+
+    await hub.async_set_thermostat_temperature("aabbccddeeff0011", 22)
+    await hub.async_set_thermostat_temperature("aabbccddeeff0011", 23)
+    hub._pending["thermostat_aabbccddeeff0011"].deadline = 0
+    await hub._async_expire_pending(1)
+
+    record = next(
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Command confirmation timed out; continuing")
+    )
+    assert record.levelno == logging.INFO
+
+
 async def test_unconfirmed_command_uses_one_shared_status_query_fallback(
     hass, mock_config_entry
 ) -> None:

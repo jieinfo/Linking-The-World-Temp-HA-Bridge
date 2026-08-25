@@ -18,7 +18,7 @@ from .panel_registry import PanelRecord
 
 def async_delete_entry_issues(hass: HomeAssistant, entry_id: str) -> None:
     """Remove every entry-scoped Repair during config-entry removal."""
-    for issue_type in ("login_timeout", "protocol_incompatible"):
+    for issue_type in ("login_timeout", "protocol_incompatible", "command_timeout"):
         ir.async_delete_issue(hass, DOMAIN, f"{issue_type}_{entry_id}")
     stale_prefix = f"stale_panel_{entry_id}_"
     for domain, issue_id in tuple(ir.async_get(hass).issues):
@@ -38,6 +38,7 @@ class RepairManager:
         self.hass = hass
         self.entry = entry
         self.consecutive_login_timeouts = 0
+        self.consecutive_command_timeouts = 0
 
     @property
     def _login_timeout_issue_id(self) -> str:
@@ -46,6 +47,10 @@ class RepairManager:
     @property
     def _protocol_issue_id(self) -> str:
         return f"protocol_incompatible_{self.entry.entry_id}"
+
+    @property
+    def _command_timeout_issue_id(self) -> str:
+        return f"command_timeout_{self.entry.entry_id}"
 
     def _stale_panel_issue_id(self, mac_hex: str) -> str:
         return f"stale_panel_{self.entry.entry_id}_{mac_hex}"
@@ -83,6 +88,26 @@ class RepairManager:
             is_fixable=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key="protocol_incompatible",
+        )
+
+    def set_command_timeout(self, active: bool) -> None:
+        """Surface only repeated final command-confirmation failures."""
+        if not active:
+            self.consecutive_command_timeouts = 0
+            ir.async_delete_issue(self.hass, DOMAIN, self._command_timeout_issue_id)
+            return
+
+        self.consecutive_command_timeouts += 1
+        if self.consecutive_command_timeouts < 3:
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._command_timeout_issue_id,
+            data={"entry_id": self.entry.entry_id},
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="command_timeout",
         )
 
     async def async_set_stale_panel(

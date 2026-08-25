@@ -17,7 +17,13 @@ class SystemModeSelect(LinkingTempEntity, SelectEntity):
 
     def __init__(self, hub: LinkingTempHub) -> None:
         super().__init__(hub, "system_mode")
-        self._attr_options = list(MODE_BY_LABEL)
+
+    @property
+    def options(self) -> list[str]:
+        """Keep the entity online while hiding actions the controller rejects."""
+        if not self.hub.state.can_change_mode and (current := self.current_option):
+            return [current]
+        return list(MODE_BY_LABEL)
 
     @property
     def current_option(self) -> str | None:
