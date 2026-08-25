@@ -494,7 +494,7 @@ async def test_command_timeout_repair_starts_after_three_and_clears_on_recovery(
     issue = _issue(hass, issue_id)
     assert issue is not None
     assert not issue.is_fixable
-    assert issue.severity is ir.IssueSeverity.WARNING
+    assert issue.severity is ir.IssueSeverity.ERROR
     assert issue.data == {"entry_id": mock_config_entry.entry_id}
 
     manager.set_command_timeout(False)

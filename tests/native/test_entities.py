@@ -599,6 +599,30 @@ async def test_mode_select_remains_available_but_locks_options_while_system_runs
     assert entity.options == ["制冷", "制热", "通风", "除湿"]
 
 
+async def test_mode_select_locks_while_power_on_is_queued(
+    hass, mock_config_entry
+) -> None:
+    """The mode UI accounts for an earlier queued power-on intent."""
+    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
+    hub.connected = True
+    hub.protocol_verified = True
+    hub.health.mark_stage(ConnectionStage.READY)
+    hub.allow_control = True
+    hub.command_min_interval = 0
+    hub._client = _CommandClient()  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "cool"
+    entity = SystemModeSelect(hub)
+
+    await hub.async_set_scene("away")
+    await hub.async_set_system_power(True)
+
+    assert entity.options == ["制冷"]
+    assert entity.extra_state_attributes["can_change_mode"] is False
+    with pytest.raises(HomeAssistantError, match="请先关闭"):
+        await hub.async_set_mode("heat")
+
+
 @pytest.mark.usefixtures("enable_custom_integrations")
 async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
     hass, setup_integration, fake_controller

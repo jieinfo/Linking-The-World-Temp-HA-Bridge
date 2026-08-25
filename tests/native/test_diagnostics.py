@@ -80,7 +80,16 @@ class _CommandClient:
         self.commands: list[tuple[bytes, int, int | None]] = []
         self.status_requests = 0
 
-    async def send_command(self, mac: bytes, command: int, value: int | None) -> None:
+    async def send_command(
+        self,
+        mac: bytes,
+        command: int,
+        value: int | None,
+        *,
+        before_write=None,
+    ) -> None:
+        if before_write is not None:
+            before_write()
         self.commands.append((mac, command, value))
         if self.fail_send:
             raise ConnectionError("send failed")
@@ -164,6 +173,69 @@ def _ready_command_hub(hass, mock_config_entry) -> LinkingTempHub:
     }
     hub.room_names["ROOM-ID-CANARY"] = "ROOM-NAME-CANARY"
     return hub
+
+
+async def test_queued_mode_is_revalidated_after_power_changes(
+    hass, mock_config_entry
+) -> None:
+    """A queued mode command cannot cross the controller's power interlock."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "cool"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_mode("heat")
+    hub.state.power = "ON"
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+
+    assert [command[1:] for command in client.commands] == [(4, 1)]
+    assert "system" not in hub._pending
+    assert "system" not in hub._queued
+    assert hub.health.snapshot()["counters"]["commands_blocked"] == 1
+
+
+async def test_queued_humidifier_is_revalidated_after_mode_changes(
+    hass, mock_config_entry
+) -> None:
+    """A queued humidifier command cannot leave heat mode before dispatch."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "heat"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_winter_humidifier(True)
+    hub.state.mode = "cool"
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+
+    assert [command[1:] for command in client.commands] == [(4, 1)]
+    assert "system" not in hub._pending
+    assert "system" not in hub._queued
+    assert hub.health.snapshot()["counters"]["commands_blocked"] == 1
+
+
+async def test_total_control_queue_drops_reversal_to_verified_state(
+    hass, mock_config_entry
+) -> None:
+    """A latest intent equal to verified state removes its stale queued opposite."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_system_power(True)
+    await hub.async_set_system_power(False)
+
+    assert "system" not in hub._queued
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+    assert [command[1:] for command in client.commands] == [(4, 1)]
 
 
 async def test_production_command_logs_never_expose_panel_identity(
