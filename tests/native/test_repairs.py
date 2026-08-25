@@ -479,6 +479,29 @@ async def test_login_timeout_repair_starts_after_three_consecutive_failures(
     ) == 1
 
 
+async def test_command_timeout_repair_starts_after_three_and_clears_on_recovery(
+    hass, mock_config_entry
+) -> None:
+    """Repeated final control failures become visible and one success resolves them."""
+    manager = RepairManager(hass, mock_config_entry)
+    issue_id = f"command_timeout_{mock_config_entry.entry_id}"
+
+    manager.set_command_timeout(True)
+    manager.set_command_timeout(True)
+    assert _issue(hass, issue_id) is None
+
+    manager.set_command_timeout(True)
+    issue = _issue(hass, issue_id)
+    assert issue is not None
+    assert not issue.is_fixable
+    assert issue.severity is ir.IssueSeverity.WARNING
+    assert issue.data == {"entry_id": mock_config_entry.entry_id}
+
+    manager.set_command_timeout(False)
+    assert _issue(hass, issue_id) is None
+    assert manager.consecutive_command_timeouts == 0
+
+
 async def test_successful_login_clears_login_and_protocol_repairs(
     hass, mock_config_entry
 ) -> None:

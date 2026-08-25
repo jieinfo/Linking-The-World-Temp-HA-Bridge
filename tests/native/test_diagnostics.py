@@ -365,6 +365,37 @@ async def test_command_confirmation_prefers_push_before_status_query(
     assert counters["status_fallback_queries"] == 0
 
 
+async def test_command_health_tracks_queue_peak_final_timeouts_and_recovery(
+    hass, mock_config_entry
+) -> None:
+    """Diagnostics distinguish queued load, repeated failures, and recovery."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+
+    await hub.async_set_system_power(True)
+    await hub.async_set_scene("away")
+    snapshot = hub.health.snapshot()["command_runtime"]
+    assert snapshot["current_queue_depth"] == 2
+    assert snapshot["peak_queue_depth"] == 2
+
+    for _ in range(3):
+        hub._pending["system"].deadline = 0
+        await hub._async_expire_pending(1)
+        await hub._async_dispatch_queued()
+        if "system" not in hub._pending:
+            await hub.async_set_system_power(True)
+
+    snapshot = hub.health.snapshot()["command_runtime"]
+    assert snapshot["consecutive_timeouts"] == 3
+    assert snapshot["recoveries"] == 0
+
+    hub._confirm_pending("system", {"power": "ON"})
+    snapshot = hub.health.snapshot()["command_runtime"]
+    assert snapshot["consecutive_timeouts"] == 0
+    assert snapshot["recoveries"] == 1
+
+
 async def test_unconfirmed_command_uses_one_shared_status_query_fallback(
     hass, mock_config_entry
 ) -> None:

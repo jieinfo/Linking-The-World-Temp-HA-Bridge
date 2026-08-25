@@ -24,6 +24,7 @@ from custom_components.linking_the_world_temp_ha.protocol import (
     tlv,
 )
 from custom_components.linking_the_world_temp_ha.runtime import ConnectionStage
+from custom_components.linking_the_world_temp_ha.select import SystemModeSelect
 from custom_components.linking_the_world_temp_ha.switch import (
     SystemPowerSwitch,
     WinterHumidifierSwitch,
@@ -525,6 +526,61 @@ async def test_system_mode_scene_and_humidifier_follow_controller_push_state(
     await _wait_for(lambda: hub.state.winter_humidifier == "ON")
     await hass.async_block_till_done()
     assert hass.states.get(humidifier_entity).state == "on"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_system_commands_queue_independent_intents_and_keep_latest_mode(
+    setup_integration, fake_controller
+) -> None:
+    """Rapid total-control actions are serialized without rejecting the user."""
+    hub = setup_integration.hub
+    hub.command_min_interval = 0
+    await fake_controller.async_send_status(_system_status(hub, power=False, mode=1))
+    await _wait_for(lambda: hub.available and hub.state.mode == "cool")
+
+    await hub.async_set_mode("heat")
+    await hub.async_set_scene("away")
+    await hub.async_set_mode("ventilation")
+
+    assert hub._pending["system"].expected == {"mode": "heat"}
+    assert [command.expected for command in hub._queued["system"]] == [
+        {"scene": "away"},
+        {"mode": "ventilation"},
+    ]
+
+    await fake_controller.async_send_status(
+        _system_status(hub, power=False, mode=2, scene=1)
+    )
+    await _wait_for(lambda: "system" not in hub._pending)
+    await hub._async_dispatch_queued()
+    assert hub._pending["system"].expected == {"scene": "away"}
+
+    await fake_controller.async_send_status(
+        _system_status(hub, power=False, mode=2, scene=0)
+    )
+    await _wait_for(lambda: "system" not in hub._pending)
+    await hub._async_dispatch_queued()
+    assert hub._pending["system"].expected == {"mode": "ventilation"}
+
+
+async def test_mode_select_remains_available_but_locks_options_while_system_runs(
+    hass, mock_config_entry
+) -> None:
+    """The mode entity stays understandable while preventing invalid UI actions."""
+    hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
+    hub.connected = True
+    hub.protocol_verified = True
+    hub.health.mark_stage(ConnectionStage.READY)
+    hub.state.mode = "cool"
+    entity = SystemModeSelect(hub)
+
+    hub.state.power = "ON"
+    assert entity.available
+    assert entity.options == ["制冷"]
+    assert entity.extra_state_attributes["can_change_mode"] is False
+
+    hub.state.power = "OFF"
+    assert entity.options == ["制冷", "制热", "通风", "除湿"]
 
     await hass.services.async_call(
         switch.DOMAIN,
