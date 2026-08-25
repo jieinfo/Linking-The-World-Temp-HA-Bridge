@@ -599,6 +599,7 @@ async def test_mode_select_remains_available_but_locks_options_while_system_runs
     assert entity.options == ["制冷", "制热", "通风", "除湿"]
 
 
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_mode_select_locks_while_power_on_is_queued(
     hass, setup_integration, fake_controller
 ) -> None:
