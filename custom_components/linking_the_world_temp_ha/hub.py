@@ -257,6 +257,12 @@ class LinkingTempHub:
             return "请先关闭科技系统，再切换运行模式"
         return None
 
+    def _mode_dispatch_block_reason(self) -> str | None:
+        """Revalidate confirmed state without inspecting later queued intents."""
+        if not self.state.can_change_mode:
+            return "请先关闭科技系统，再切换运行模式"
+        return None
+
     def _winter_humidifier_block_reason(self) -> str | None:
         if self.state.mode != "heat":
             return "冬季加湿仅能在制热模式下使用"
@@ -273,6 +279,12 @@ class LinkingTempHub:
             for command in commands
         ):
             return "科技系统正在离开制热模式，冬季加湿不能操作"
+        return None
+
+    def _winter_humidifier_dispatch_block_reason(self) -> str | None:
+        """Revalidate confirmed mode without blocking on later queue entries."""
+        if self.state.mode != "heat":
+            return "冬季加湿仅能在制热模式下使用"
         return None
 
     async def async_set_system_power(self, enabled: bool) -> None:
@@ -298,7 +310,7 @@ class LinkingTempHub:
             COMMAND_MODE,
             MODE_VALUES[mode],
             coalesce=True,
-            send_guard=self._mode_change_block_reason,
+            send_guard=self._mode_dispatch_block_reason,
         )
 
     async def async_set_scene(self, scene: str) -> None:
@@ -325,7 +337,7 @@ class LinkingTempHub:
             COMMAND_WINTER_HUMIDIFIER,
             1 if enabled else 0,
             coalesce=True,
-            send_guard=self._winter_humidifier_block_reason,
+            send_guard=self._winter_humidifier_dispatch_block_reason,
         )
 
     async def async_set_thermostat_power(self, mac_hex: str, enabled: bool) -> None:
