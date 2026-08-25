@@ -527,6 +527,22 @@ async def test_system_mode_scene_and_humidifier_follow_controller_push_state(
     await hass.async_block_till_done()
     assert hass.states.get(humidifier_entity).state == "on"
 
+    await hass.services.async_call(
+        switch.DOMAIN,
+        switch.SERVICE_TURN_OFF,
+        {"entity_id": humidifier_entity},
+        blocking=True,
+    )
+    await _wait_for(lambda: hub.state.winter_humidifier == "OFF")
+    system_entity = _entity_id(hass, hub.entry.entry_id, "switch", "system_power")
+    await hass.services.async_call(
+        switch.DOMAIN,
+        switch.SERVICE_TURN_OFF,
+        {"entity_id": system_entity},
+        blocking=True,
+    )
+    await _wait_for(lambda: hub.state.power == "OFF")
+
 
 @pytest.mark.usefixtures("enable_custom_integrations")
 async def test_system_commands_queue_independent_intents_and_keep_latest_mode(
@@ -581,22 +597,6 @@ async def test_mode_select_remains_available_but_locks_options_while_system_runs
 
     hub.state.power = "OFF"
     assert entity.options == ["制冷", "制热", "通风", "除湿"]
-
-    await hass.services.async_call(
-        switch.DOMAIN,
-        switch.SERVICE_TURN_OFF,
-        {"entity_id": humidifier_entity},
-        blocking=True,
-    )
-    await _wait_for(lambda: hub.state.winter_humidifier == "OFF")
-    system_entity = _entity_id(hass, hub.entry.entry_id, "switch", "system_power")
-    await hass.services.async_call(
-        switch.DOMAIN,
-        switch.SERVICE_TURN_OFF,
-        {"entity_id": system_entity},
-        blocking=True,
-    )
-    await _wait_for(lambda: hub.state.power == "OFF")
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

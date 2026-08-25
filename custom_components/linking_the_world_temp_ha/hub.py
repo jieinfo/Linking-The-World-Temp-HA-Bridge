@@ -373,7 +373,10 @@ class LinkingTempHub:
 
     def _record_command_queue_depth(self) -> None:
         """Publish bounded command pressure without retaining command details."""
-        self.health.record_command_queue_depth(
+        health = getattr(self, "health", None)
+        if health is None:
+            return
+        health.record_command_queue_depth(
             len(self._pending) + sum(len(commands) for commands in self._queued.values())
         )
 
