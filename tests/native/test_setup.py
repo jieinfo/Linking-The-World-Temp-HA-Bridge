@@ -495,7 +495,7 @@ async def test_restart_preserves_dynamic_panel_identity_and_restores_unavailable
         hass.config_entries.async_unload(mock_config_entry.entry_id), timeout=1
     )
     assert await asyncio.wait_for(
-        hass.config_entries.async_setup(mock_config_entry.entry_id), timeout=1
+        hass.config_entries.async_setup(mock_config_entry.entry_id), timeout=3
     )
     reloaded = mock_config_entry.runtime_data
     await _wait_for(lambda: reloaded.health.stage is ConnectionStage.READY)

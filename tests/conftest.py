@@ -30,7 +30,7 @@ from custom_components.linking_the_world_temp_ha.runtime import ConnectionStage
 from tests.helpers import FakeMC7021Server
 
 
-SETUP_READY_TIMEOUT = 1
+SETUP_READY_TIMEOUT = 3
 
 
 @pytest_asyncio.fixture

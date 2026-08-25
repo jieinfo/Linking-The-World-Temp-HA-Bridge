@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import importlib
-import asyncio
+import json
 import struct
 import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+FIXTURE_PATH = ROOT / "tests" / "fixtures" / "official_panel_frames.json"
 PACKAGE_NAME = "custom_components.linking_the_world_temp_ha"
 if PACKAGE_NAME not in sys.modules:
     package = types.ModuleType(PACKAGE_NAME)
@@ -38,11 +40,24 @@ class DecoderTests(unittest.TestCase):
         decoder = protocol.YasHcpDecoder()
         excessive = b"#" + struct.pack("<H", protocol.MAX_PAYLOAD_LENGTH + 1)
         excessive += protocol.MAGIC
-        malformed = b"#" + struct.pack("<H", 12) + protocol.MAGIC + b"\x01\x05\x0c\x00\x00\x00\x00\x00"
-        invalid_length = b"#" + struct.pack("<H", 14) + protocol.MAGIC + b"\x01\x05\x0c\x00\x05\x00\x00\x00"
+        malformed = (
+            b"#"
+            + struct.pack("<H", 12)
+            + protocol.MAGIC
+            + b"\x01\x05\x0c\x00\x00\x00\x00\x00"
+        )
+        invalid_length = (
+            b"#"
+            + struct.pack("<H", 14)
+            + protocol.MAGIC
+            + b"\x01\x05\x0c\x00\x05\x00\x00\x00"
+        )
         valid = protocol.YasHcpFrame(5, 12, 7, b"ok")
 
-        self.assertEqual(decoder.feed(excessive + malformed + invalid_length + valid.encode()), [valid])
+        self.assertEqual(
+            decoder.feed(excessive + malformed + invalid_length + valid.encode()),
+            [valid],
+        )
         self.assertGreaterEqual(decoder.frames_malformed, 2)
         self.assertGreater(decoder.bytes_discarded, 0)
 
@@ -130,9 +145,7 @@ class StatusTests(unittest.TestCase):
             humidity=100,
             available=True,
         )
-        self.assertFalse(
-            protocol.preserve_valid_thermostat_measurements(current, None)
-        )
+        self.assertFalse(protocol.preserve_valid_thermostat_measurements(current, None))
         self.assertIsNone(current.current_temperature)
         self.assertIsNone(current.humidity)
 
@@ -147,6 +160,36 @@ class StatusTests(unittest.TestCase):
 
 
 class ClientEdgeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_initial_queries_are_paced_without_expanding_query_surface(
+        self,
+    ) -> None:
+        client = protocol.AsyncMoorgenClient(
+            "192.0.2.1", 9000, "user", "password", "0011223344556677"
+        )
+        sent: list[tuple[int, int, bytes]] = []
+        sleeps: list[float] = []
+
+        async def capture_send(kind: int, opcode: int, body: bytes) -> None:
+            sent.append((kind, opcode, body))
+
+        async def capture_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        client._send = capture_send
+        with patch.object(protocol.asyncio, "sleep", capture_sleep):
+            await client._send_initial_queries()
+
+        categories = [
+            dict(protocol.iter_tlvs(body))[0x000F][0]
+            for kind, opcode, body in sent
+            if (kind, opcode) == (3, 7)
+        ]
+        self.assertEqual(
+            categories,
+            [0x0B, 0x1F, 0x01, 0x11, 0x09, 0x0D, 0x03, 0x07, 0x1B, 0x17],
+        )
+        self.assertEqual(sleeps, [0.15] * 9)
+
     def test_client_rejects_invalid_identity_before_opening_a_socket(self) -> None:
         with self.assertRaises(ValueError):
             protocol.AsyncMoorgenClient("127.0.0.1", 9000, "admin", "secret", "bad")
@@ -168,6 +211,36 @@ class ClientEdgeTests(unittest.IsolatedAsyncioTestCase):
         client._inbox.put_nowait(protocol.YasHcpFrame(1, 4, 0, b""))
         with self.assertRaises(protocol.IncompatibleProtocol):
             await client._wait_for(1, 3, 0.1)
+
+
+class OfficialPanelCaptureRegressionTests(unittest.TestCase):
+    def test_sanitized_official_frames_keep_their_control_semantics(self) -> None:
+        fixtures = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        decoder = protocol.YasHcpDecoder()
+
+        for fixture in fixtures["frames"]:
+            with self.subTest(name=fixture["name"]):
+                frames = decoder.feed(bytes.fromhex(fixture["frame_hex"]))
+                self.assertEqual(len(frames), 1)
+                frame = frames[0]
+                self.assertEqual([frame.kind, frame.opcode], fixture["message"])
+                fields = protocol.parse_tlvs(frame.body)
+                self.assertEqual(fields[0x0004].hex(), fixture["mac"])
+                if "command" in fixture:
+                    self.assertEqual(fields[0x0009][0], fixture["command"])
+                    self.assertEqual(
+                        fields.get(0x000A, b"").hex(), fixture.get("value_hex", "")
+                    )
+                else:
+                    state = protocol.decode_thermostat_status(
+                        frame.body, bytes.fromhex(fixtures["tech_system_mac"])
+                    )
+                    self.assertIsNotNone(state)
+                    assert state is not None
+                    self.assertEqual(state.target_temperature, 24)
+                    self.assertEqual(state.current_temperature, 31.2)
+                    self.assertEqual(state.humidity, 64)
+                    self.assertEqual(state.power, "ON")
 
 
 if __name__ == "__main__":

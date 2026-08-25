@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 STATUS_POLL_INTERVAL = 2.0
+PUSH_CONFIRMATION_GRACE = 1.0
 MAX_TEMPERATURE_COMMAND_ATTEMPTS = 2
 
 
@@ -23,6 +24,7 @@ class PendingCommand:
     command: int
     value: int | None
     attempts: int = 1
+    status_queries: int = 0
 
 
 @dataclass(frozen=True)
@@ -53,9 +55,7 @@ def coalesce_queued(
     """Keep the latest command per property while preserving cross-property order."""
     intent = command_intent(replacement.expected)
     retained = [
-        command
-        for command in queued
-        if command_intent(command.expected) != intent
+        command for command in queued if command_intent(command.expected) != intent
     ]
     if pending is not None and replacement.expected == pending.expected:
         return retained
@@ -71,3 +71,8 @@ def temperature_retry_is_allowed(pending: PendingCommand) -> bool:
         and pending.value is not None
         and pending.attempts < MAX_TEMPERATURE_COMMAND_ATTEMPTS
     )
+
+
+def first_status_poll_at(sent_at: float, confirmation_timeout: float) -> float:
+    """Leave time for a controller push before falling back to a status query."""
+    return sent_at + min(PUSH_CONFIRMATION_GRACE, confirmation_timeout / 2)

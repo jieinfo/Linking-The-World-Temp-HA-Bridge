@@ -21,6 +21,7 @@ from .command_queue import (
     QueuedCommand,
     coalesce_queued,
     command_intent,
+    first_status_poll_at,
     temperature_retry_is_allowed,
 )
 from .const import (
@@ -439,9 +440,7 @@ class LinkingTempHub:
                 self.hass, {_FLOW_SOURCE_REAUTH, _FLOW_SOURCE_RECONFIGURE}
             )
         )
-        if any(
-            flow["context"].get("source") == _FLOW_SOURCE_REAUTH for flow in flows
-        ):
+        if any(flow["context"].get("source") == _FLOW_SOURCE_REAUTH for flow in flows):
             return
         if not flows:
             self.entry.async_start_reauth(self.hass)
@@ -687,9 +686,7 @@ class LinkingTempHub:
                     f"仍在等待主机确认: {self._pending[target].label}"
                 )
             pending = self._pending[target]
-            queued = coalesce_queued(
-                pending, self._queued.get(target, ()), replacement
-            )
+            queued = coalesce_queued(pending, self._queued.get(target, ()), replacement)
             if queued:
                 self._queued[target] = queued
                 self.last_command_status = f"queued:{label}"
@@ -720,11 +717,7 @@ class LinkingTempHub:
             expected,
             now,
             now + self.command_confirmation_timeout,
-            now
-            + min(
-                STATUS_POLL_INTERVAL,
-                max(0.5, self.command_confirmation_timeout / 2),
-            ),
+            first_status_poll_at(now, self.command_confirmation_timeout),
             mac,
             command,
             value,
@@ -744,13 +737,11 @@ class LinkingTempHub:
                 )
             self.health.increment("commands_sent")
             self._last_command_at = time.monotonic()
-            await self._client.request_status()
         except Exception:
             self._pending.pop(target, None)
             self.last_command_status = f"failed:{label}"
             _LOGGER.warning(
-                "MC7021 command send failed: target_type=%s command_code=%d "
-                "attempt=1",
+                "MC7021 command send failed: target_type=%s command_code=%d attempt=1",
                 self._command_target_type(target),
                 command,
             )
@@ -796,6 +787,9 @@ class LinkingTempHub:
         ]
         if not due or self._client is None:
             return
+        self.health.increment("status_fallback_queries")
+        for pending in due:
+            pending.status_queries += 1
         await self._client.request_status()
         for pending in due:
             pending.next_status_poll_at = now + STATUS_POLL_INTERVAL
@@ -808,8 +802,7 @@ class LinkingTempHub:
                 for pending in due
             ),
             sum(
-                self._command_target_type(pending.target) == "system"
-                for pending in due
+                self._command_target_type(pending.target) == "system" for pending in due
             ),
         )
 
@@ -822,6 +815,11 @@ class LinkingTempHub:
         self._pending.pop(target, None)
         self.last_command_status = f"confirmed:{pending.label}"
         self.health.increment("commands_confirmed")
+        self.health.increment(
+            "commands_confirmed_after_query"
+            if pending.status_queries
+            else "commands_confirmed_by_push"
+        )
         self.health.record_confirmation_latency(time.monotonic() - pending.sent_at)
 
     async def _async_expire_pending(self, now: float) -> None:
@@ -875,9 +873,7 @@ class LinkingTempHub:
         if expired:
             self._notify()
 
-    async def _async_retry_temperature_command(
-        self, pending: PendingCommand
-    ) -> None:
+    async def _async_retry_temperature_command(self, pending: PendingCommand) -> None:
         """Retry one unconfirmed thermostat setpoint without reporting failure yet."""
         client = self._client
         if client is None or not self.available:
@@ -893,9 +889,8 @@ class LinkingTempHub:
         pending.attempts += 1
         self.health.increment("commands_retried")
         pending.deadline = retry_at + self.command_confirmation_timeout
-        pending.next_status_poll_at = retry_at + min(
-            STATUS_POLL_INTERVAL,
-            max(0.5, self.command_confirmation_timeout / 2),
+        pending.next_status_poll_at = first_status_poll_at(
+            retry_at, self.command_confirmation_timeout
         )
         self.last_command_status = f"retrying:{pending.label}"
         _LOGGER.warning(
@@ -911,7 +906,6 @@ class LinkingTempHub:
             await client.send_command(pending.mac, pending.command, pending.value)
             self.health.increment("commands_sent")
             self._last_command_at = time.monotonic()
-            await client.request_status()
         except Exception:
             if self._pending.get(pending.target) is pending:
                 self._pending.pop(pending.target, None)
@@ -976,7 +970,8 @@ class LinkingTempHub:
             status_is_contiguous = (
                 previous_status_at is None
                 or now_monotonic >= previous_status_at
-                and now_monotonic - previous_status_at <= self.controller_silence_timeout
+                and now_monotonic - previous_status_at
+                <= self.controller_silence_timeout
             )
             self._last_valid_status_at = now_monotonic
         if (

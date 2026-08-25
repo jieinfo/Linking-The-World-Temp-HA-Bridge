@@ -1,0 +1,42 @@
+{
+  "source": "Sanitized protocol fixtures derived from authorized official-panel captures on 2026-08-25",
+  "tech_system_mac": "ff00ffffffff00ff",
+  "frames": [
+    {
+      "name": "total_power_on",
+      "frame_hex": "232700646f6f7961736863700104093e001600100001000104000800ff00ffffffff00ff090001000223",
+      "message": [4, 9],
+      "mac": "ff00ffffffff00ff",
+      "command": 2
+    },
+    {
+      "name": "mode_heat",
+      "frame_hex": "232c00646f6f79617368637001040944001b00100001000104000800ff00ffffffff00ff09000100030a0001000223",
+      "message": [4, 9],
+      "mac": "ff00ffffffff00ff",
+      "command": 3,
+      "value_hex": "02"
+    },
+    {
+      "name": "thermostat_setpoint_24",
+      "frame_hex": "232c00646f6f796173686370010409da001b00100001000104000800ff00ffffffff01ff09000100030a0001003023",
+      "message": [4, 9],
+      "mac": "ff00ffffffff01ff",
+      "command": 3,
+      "value_hex": "30"
+    },
+    {
+      "name": "thermostat_power_off",
+      "frame_hex": "232700646f6f796173686370010409e0001600100001000104000800ff00ffffffff01ff090001000123",
+      "message": [4, 9],
+      "mac": "ff00ffffffff01ff",
+      "command": 1
+    },
+    {
+      "name": "thermostat_status_24_on",
+      "frame_hex": "234100646f6f79617368637001050c0000300004000800ff00ffffffff01ff75000800ff00ffffffff00ff30000600726f6f6d30310a00050030380140000b0001000123",
+      "message": [5, 12],
+      "mac": "ff00ffffffff01ff"
+    }
+  ]
+}

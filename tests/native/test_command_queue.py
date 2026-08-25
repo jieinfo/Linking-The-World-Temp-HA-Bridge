@@ -44,6 +44,12 @@ def replacement(expected: str, *, intent: str = "target_temperature"):
 
 
 class CommandQueueTests(unittest.TestCase):
+    def test_first_status_poll_leaves_one_second_for_push_confirmation(self) -> None:
+        self.assertEqual(queue.first_status_poll_at(10.0, 8.0), 11.0)
+
+    def test_short_confirmation_window_still_leaves_time_for_fallback(self) -> None:
+        self.assertEqual(queue.first_status_poll_at(10.0, 1.0), 10.5)
+
     def test_repeated_pending_value_cancels_a_stale_replacement(self) -> None:
         queued = queue.coalesce_queued(pending(), (), replacement("22"))
         self.assertEqual(
@@ -63,9 +69,7 @@ class CommandQueueTests(unittest.TestCase):
         power = queue.coalesce_queued(
             pending(), temperature, replacement("OFF", intent="power")
         )
-        latest_temperature = queue.coalesce_queued(
-            pending(), power, replacement("23")
-        )
+        latest_temperature = queue.coalesce_queued(pending(), power, replacement("23"))
         self.assertEqual(
             [command.expected for command in latest_temperature],
             [{"power": "OFF"}, {"target_temperature": "23"}],
