@@ -498,7 +498,10 @@ async def test_restart_preserves_dynamic_panel_identity_and_restores_unavailable
         hass.config_entries.async_setup(mock_config_entry.entry_id), timeout=3
     )
     reloaded = mock_config_entry.runtime_data
-    await _wait_for(lambda: reloaded.health.stage is ConnectionStage.READY)
+    await _wait_for(
+        lambda: reloaded.health.stage is ConnectionStage.READY,
+        timeout=3,
+    )
     assert reloaded is not first_runtime
     assert mac_hex in reloaded.hub.thermostats
     assert not reloaded.hub.thermostats[mac_hex].available
@@ -531,7 +534,10 @@ async def test_config_entry_reload_restarts_the_native_runtime(
         hass.config_entries.async_reload(mock_config_entry.entry_id), timeout=5
     )
     reloaded = mock_config_entry.runtime_data
-    await _wait_for(lambda: reloaded.health.stage is ConnectionStage.READY)
+    await _wait_for(
+        lambda: reloaded.health.stage is ConnectionStage.READY,
+        timeout=3,
+    )
     assert reloaded is not first_runtime
 
 
