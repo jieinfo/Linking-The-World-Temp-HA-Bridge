@@ -238,6 +238,52 @@ async def test_total_control_queue_drops_reversal_to_verified_state(
     assert [command[1:] for command in client.commands] == [(4, 0)]
 
 
+async def test_later_power_on_does_not_block_earlier_queued_mode(
+    hass, mock_config_entry
+) -> None:
+    """Dispatch guards respect queue order instead of inspecting later intents."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "cool"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_mode("heat")
+    await hub.async_set_system_power(True)
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+
+    assert hub._pending["system"].expected == {"mode": "heat"}
+    assert [command.expected for command in hub._queued["system"]] == [
+        {"power": "ON"}
+    ]
+    assert [command[1:] for command in client.commands] == [(4, 0), (3, 2)]
+
+
+async def test_later_mode_change_does_not_block_earlier_queued_humidifier(
+    hass, mock_config_entry
+) -> None:
+    """A valid humidifier intent runs before a later departure from heat mode."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    client = _CommandClient()
+    hub._client = client  # type: ignore[assignment]
+    hub.state.power = "OFF"
+    hub.state.mode = "heat"
+
+    await hub.async_set_scene("away")
+    await hub.async_set_winter_humidifier(True)
+    await hub.async_set_mode("cool")
+    hub._confirm_pending("system", {"scene": "away"})
+    await hub._async_dispatch_queued()
+
+    assert hub._pending["system"].expected == {"winter_humidifier": "ON"}
+    assert [command.expected for command in hub._queued["system"]] == [
+        {"mode": "cool"}
+    ]
+    assert [command[1:] for command in client.commands] == [(4, 0), (5, 1)]
+
+
 async def test_production_command_logs_never_expose_panel_identity(
     hass, mock_config_entry, caplog: pytest.LogCaptureFixture
 ) -> None:
