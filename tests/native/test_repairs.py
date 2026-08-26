@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -45,6 +46,10 @@ def _stale_issue_id(entry_id: str, mac_hex: str) -> str:
     return f"stale_panel_{entry_id}_{mac_hex}"
 
 
+def _fault_issue_id(entry_id: str, fault_type: str) -> str:
+    return f"{fault_type}_fault_{entry_id}"
+
+
 def _panel_unique_id_prefix(entry_id: str, mac_hex: str) -> str:
     return f"{entry_id}_thermostat_{mac_hex}_"
 
@@ -63,6 +68,49 @@ async def test_fix_flow_rejects_incomplete_or_unknown_issue_metadata(hass) -> No
         )
     with pytest.raises(ValueError, match="Unsupported"):
         await async_create_fix_flow(hass, "unknown_x", {"entry_id": "entry"})
+
+
+@pytest.mark.parametrize("fault_type", ["system", "filter"])
+def test_fault_repair_is_error_scoped_and_clears_on_zero(
+    hass, mock_config_entry, fault_type: str, caplog
+) -> None:
+    """A controller fault stays visible until a valid zero report clears it."""
+    manager = RepairManager(hass, mock_config_entry)
+    issue_id = _fault_issue_id(mock_config_entry.entry_id, fault_type)
+
+    with caplog.at_level(logging.INFO):
+        manager.set_fault_code(fault_type, 7)
+        issue = _issue(hass, issue_id)
+        assert issue is not None
+        assert issue.severity is ir.IssueSeverity.ERROR
+        assert issue.is_persistent
+        assert issue.translation_placeholders == {"code": "7"}
+
+        manager.set_fault_code(fault_type, 0)
+
+    assert _issue(hass, issue_id) is None
+    assert any("fault cleared" in record.message for record in caplog.records)
+
+
+def test_fault_repair_deduplicates_repeats_and_updates_changed_code(
+    hass, mock_config_entry, caplog
+) -> None:
+    """Repeated status pushes do not spam logs; a changed code remains visible."""
+    manager = RepairManager(hass, mock_config_entry)
+    issue_id = _fault_issue_id(mock_config_entry.entry_id, "system")
+
+    with caplog.at_level(logging.ERROR):
+        manager.set_fault_code("system", 7)
+        manager.set_fault_code("system", 7)
+        manager.set_fault_code("system", 9)
+
+    issue = _issue(hass, issue_id)
+    assert issue is not None
+    assert issue.translation_placeholders == {"code": "9"}
+    fault_logs = [
+        record for record in caplog.records if "reported system fault" in record.message
+    ]
+    assert len(fault_logs) == 2
 
 
 async def _make_stale_hub(hass, mock_config_entry):

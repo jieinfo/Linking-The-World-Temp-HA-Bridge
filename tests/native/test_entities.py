@@ -11,6 +11,7 @@ from homeassistant.components import climate, select, switch
 from homeassistant.const import ATTR_TEMPERATURE
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 
 import custom_components.linking_the_world_temp_ha.hub as hub_module
 from custom_components.linking_the_world_temp_ha.const import DOMAIN
@@ -600,6 +601,12 @@ async def test_full_system_status_exposes_read_only_environment_and_fault_entiti
     for (platform, key), expected in expected_states.items():
         entity_id = _entity_id(hass, hub.entry.entry_id, platform, key)
         assert hass.states.get(entity_id).state == expected
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, f"system_fault_{hub.entry.entry_id}"
+    ) is not None
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, f"filter_fault_{hub.entry.entry_id}"
+    ) is not None
 
     await fake_controller.async_send_status(
         _system_status(
@@ -614,6 +621,12 @@ async def test_full_system_status_exposes_read_only_environment_and_fault_entiti
     for key in ("system_fault_code", "filter_fault_code"):
         entity_id = _entity_id(hass, hub.entry.entry_id, "sensor", key)
         assert hass.states.get(entity_id).state == "无故障"
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, f"system_fault_{hub.entry.entry_id}"
+    ) is None
+    assert ir.async_get(hass).async_get_issue(
+        DOMAIN, f"filter_fault_{hub.entry.entry_id}"
+    ) is None
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

@@ -1090,6 +1090,12 @@ class LinkingTempHub:
                 if getattr(self.state, name) != value:
                     setattr(self.state, name, value)
                     changed = True
+            self.repairs.set_fault_code(
+                "system", self.state.system_fault_code
+            )
+            self.repairs.set_fault_code(
+                "filter", self.state.filter_fault_code
+            )
             self._confirm_pending(
                 "system",
                 {

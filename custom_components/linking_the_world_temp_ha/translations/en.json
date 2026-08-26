@@ -99,6 +99,14 @@
       "title": "Technology-system commands were not confirmed repeatedly",
       "description": "The controller did not confirm three consecutive commands. Check connection stability, avoid reusing one account across clients, and review command queue and confirmation counters in integration diagnostics. The issue clears after the next confirmed command."
     },
+    "system_fault": {
+      "title": "Technology-system controller reported a system fault",
+      "description": "The controller reported raw system fault code {code}. This integration has no reliable vendor code definitions and cannot determine the specific cause. Check the technology-system equipment and controller, and contact property or equipment maintenance staff if needed. This issue clears automatically when the controller reports raw code 0."
+    },
+    "filter_fault": {
+      "title": "Technology-system controller reported a filter fault",
+      "description": "The controller reported raw filter fault code {code}. Check the ventilation or technology-system filter according to its maintenance instructions; this integration does not guess the code's specific meaning. This issue clears automatically when the controller reports raw code 0."
+    },
     "stale_panel": {
       "title": "Room thermostat panel has not reported for 30 days",
       "fix_flow": {

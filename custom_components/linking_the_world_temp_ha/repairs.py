@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -15,10 +16,23 @@ from homeassistant.helpers import issue_registry as ir
 from .const import DOMAIN
 from .panel_registry import PanelRecord
 
+_LOGGER = logging.getLogger(__name__)
+
+FAULT_TRANSLATION_KEYS = {
+    "system": "system_fault",
+    "filter": "filter_fault",
+}
+
 
 def async_delete_entry_issues(hass: HomeAssistant, entry_id: str) -> None:
     """Remove every entry-scoped Repair during config-entry removal."""
-    for issue_type in ("login_timeout", "protocol_incompatible", "command_timeout"):
+    for issue_type in (
+        "login_timeout",
+        "protocol_incompatible",
+        "command_timeout",
+        "system_fault",
+        "filter_fault",
+    ):
         ir.async_delete_issue(hass, DOMAIN, f"{issue_type}_{entry_id}")
     stale_prefix = f"stale_panel_{entry_id}_"
     for domain, issue_id in tuple(ir.async_get(hass).issues):
@@ -39,6 +53,9 @@ class RepairManager:
         self.entry = entry
         self.consecutive_login_timeouts = 0
         self.consecutive_command_timeouts = 0
+        self._fault_codes: dict[str, int | None] = {
+            fault_type: None for fault_type in FAULT_TRANSLATION_KEYS
+        }
 
     @property
     def _login_timeout_issue_id(self) -> str:
@@ -54,6 +71,45 @@ class RepairManager:
 
     def _stale_panel_issue_id(self, mac_hex: str) -> str:
         return f"stale_panel_{self.entry.entry_id}_{mac_hex}"
+
+    def _fault_issue_id(self, fault_type: str) -> str:
+        return f"{fault_type}_fault_{self.entry.entry_id}"
+
+    def set_fault_code(self, fault_type: str, code: int) -> None:
+        """Expose controller faults once per transition and clear on zero."""
+        if fault_type not in FAULT_TRANSLATION_KEYS:
+            raise ValueError(f"Unsupported controller fault type: {fault_type}")
+        previous = self._fault_codes[fault_type]
+        if previous == code:
+            return
+        self._fault_codes[fault_type] = code
+        issue_id = self._fault_issue_id(fault_type)
+        if code == 0:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            if previous not in (None, 0):
+                _LOGGER.info("MC7021 %s fault cleared", fault_type)
+            return
+
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            data={
+                "entry_id": self.entry.entry_id,
+                "raw_code": code,
+            },
+            is_fixable=False,
+            is_persistent=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=FAULT_TRANSLATION_KEYS[fault_type],
+            translation_placeholders={"code": str(code)},
+        )
+        _LOGGER.error(
+            "MC7021 reported %s fault: raw_code=%d previous_raw_code=%s",
+            fault_type,
+            code,
+            previous,
+        )
 
     async def async_set_login_timeout(self, active: bool) -> None:
         """Track ambiguous login timeouts and surface the third occurrence."""
