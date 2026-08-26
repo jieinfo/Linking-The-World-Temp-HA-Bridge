@@ -56,6 +56,7 @@
         "title": "运行与安全设置",
         "data": {
           "allow_control": "允许从 HA 控制设备",
+          "enable_experimental_energy_control": "启用实验性节能控制",
           "command_min_interval": "控制命令最小间隔（秒）",
           "command_confirmation_timeout": "命令确认超时（秒）",
           "controller_silence_timeout": "主机静默重连时间（秒）",
@@ -170,8 +171,8 @@
       "panel_count": {"name": "已发现面板数量"},
       "automation_temperature": {"name": "自动化温度"},
       "automation_humidity": {"name": "自动化湿度"},
-      "system_temperature": {"name": "主机温度"},
-      "system_humidity": {"name": "主机湿度"},
+      "system_temperature": {"name": "温度"},
+      "system_humidity": {"name": "湿度"},
       "system_pm25": {"name": "PM2.5"},
       "system_co2": {"name": "CO₂"},
       "system_fault_code": {"name": "系统故障原始码"},
@@ -179,7 +180,8 @@
     },
     "switch": {
       "system_power": {"name": "总开关"},
-      "winter_humidifier": {"name": "冬季加湿"}
+      "winter_humidifier": {"name": "冬季加湿"},
+      "energy_control": {"name": "节能控制"}
     }
   }
 }
