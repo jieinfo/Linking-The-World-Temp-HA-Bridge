@@ -108,6 +108,13 @@ async def async_get_config_entry_diagnostics(
                 "mode": hub.state.mode,
                 "scene": hub.state.scene,
                 "winter_humidifier": hub.state.winter_humidifier,
+                "energy_saving": hub.state.energy_saving,
+                "temperature": hub.state.temperature,
+                "humidity": hub.state.humidity,
+                "pm25": hub.state.pm25,
+                "co2": hub.state.co2,
+                "system_fault_code": hub.state.system_fault_code,
+                "filter_fault_code": hub.state.filter_fault_code,
             },
             "command_queue": {
                 "pending": len(hub._pending),

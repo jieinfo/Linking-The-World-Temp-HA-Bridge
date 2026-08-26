@@ -12,7 +12,13 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTemperature
+from homeassistant.const import (
+    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    CONCENTRATION_PARTS_PER_MILLION,
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -26,6 +32,20 @@ class DiagnosticDescription:
     key: str
     translation_key: str
     value_fn: Callable[[LinkingTempHub], Any]
+
+
+@dataclass(frozen=True)
+class SystemStatusDescription:
+    """Metadata for one read-only value from the 14-byte controller status."""
+
+    key: str
+    translation_key: str
+    value_fn: Callable[[LinkingTempHub], Any]
+    device_class: SensorDeviceClass | None = None
+    native_unit: str | None = None
+    state_class: SensorStateClass | None = None
+    entity_category: EntityCategory | None = None
+    icon: str | None = None
 
 
 DIAGNOSTICS = (
@@ -51,6 +71,55 @@ DIAGNOSTICS = (
     ),
 )
 
+SYSTEM_STATUS_SENSORS = (
+    SystemStatusDescription(
+        "system_temperature",
+        "system_temperature",
+        lambda hub: hub.state.temperature,
+        SensorDeviceClass.TEMPERATURE,
+        UnitOfTemperature.CELSIUS,
+        SensorStateClass.MEASUREMENT,
+    ),
+    SystemStatusDescription(
+        "system_humidity",
+        "system_humidity",
+        lambda hub: hub.state.humidity,
+        SensorDeviceClass.HUMIDITY,
+        PERCENTAGE,
+        SensorStateClass.MEASUREMENT,
+    ),
+    SystemStatusDescription(
+        "system_pm25",
+        "system_pm25",
+        lambda hub: hub.state.pm25,
+        SensorDeviceClass.PM25,
+        CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        SensorStateClass.MEASUREMENT,
+    ),
+    SystemStatusDescription(
+        "system_co2",
+        "system_co2",
+        lambda hub: hub.state.co2,
+        SensorDeviceClass.CO2,
+        CONCENTRATION_PARTS_PER_MILLION,
+        SensorStateClass.MEASUREMENT,
+    ),
+    SystemStatusDescription(
+        "system_fault_code",
+        "system_fault_code",
+        lambda hub: hub.state.system_fault_code,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:alert-circle-outline",
+    ),
+    SystemStatusDescription(
+        "filter_fault_code",
+        "filter_fault_code",
+        lambda hub: hub.state.filter_fault_code,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:air-filter",
+    ),
+)
+
 
 class DiagnosticSensor(LinkingTempEntity, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -67,6 +136,30 @@ class DiagnosticSensor(LinkingTempEntity, SensorEntity):
     @property
     def available(self) -> bool:
         return True
+
+
+class SystemStatusSensor(LinkingTempEntity, SensorEntity):
+    """Expose one controller-reported environment or raw fault value."""
+
+    def __init__(
+        self, hub: LinkingTempHub, description: SystemStatusDescription
+    ) -> None:
+        super().__init__(hub, description.key)
+        self.description = description
+        self._attr_translation_key = description.translation_key
+        self._attr_device_class = description.device_class
+        self._attr_native_unit_of_measurement = description.native_unit
+        self._attr_state_class = description.state_class
+        self._attr_entity_category = description.entity_category
+        self._attr_icon = description.icon
+
+    @property
+    def native_value(self) -> Any:
+        return self.description.value_fn(self.hub)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None
 
 
 class AutomationTemperatureSensor(LinkingThermostatEntity, SensorEntity):
@@ -105,6 +198,7 @@ async def async_setup_entry(
     hub: LinkingTempHub = entry.runtime_data.hub
     async_add_entities(
         [DiagnosticSensor(hub, description) for description in DIAGNOSTICS]
+        + [SystemStatusSensor(hub, description) for description in SYSTEM_STATUS_SENSORS]
     )
     added: set[str] = set()
 

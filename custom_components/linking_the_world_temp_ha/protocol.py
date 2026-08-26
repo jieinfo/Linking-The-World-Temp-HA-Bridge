@@ -175,6 +175,13 @@ class TechSystemState:
     mode: str | None = None
     scene: str | None = None
     winter_humidifier: str | None = None
+    energy_saving: str | None = None
+    temperature: float | None = None
+    humidity: int | None = None
+    pm25: float | None = None
+    co2: int | None = None
+    system_fault_code: int | None = None
+    filter_fault_code: int | None = None
 
     @property
     def can_change_mode(self) -> bool:
