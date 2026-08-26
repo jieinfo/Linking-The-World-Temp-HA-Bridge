@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import re
 import unittest
 
 
@@ -90,6 +91,42 @@ class RepositorySurfaceTests(unittest.TestCase):
         self.assertIn(NEW_REPOSITORY_URL, readme)
         self.assertIn("docs/TROUBLESHOOTING.md", readme)
         self.assertIn("docs/PRIVACY.md", readme)
+
+    def test_readme_introduction_and_environment_scope_are_user_facing(self) -> None:
+        """The introduction must avoid release and implementation trivia."""
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        introduction = readme.split("## 快速开始", maxsplit=1)[0]
+        manifest = json.loads(
+            (
+                ROOT
+                / "custom_components/linking_the_world_temp_ha/manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertIsNone(re.search(r"`\d+\.\d+\.\d+` 是", introduction))
+        for implementation_term in ("MQTT", "Mosquitto", "MT8157"):
+            self.assertNotIn(implementation_term, introduction)
+        self.assertIn(f"当前稳定版本：`{manifest['version']}`", readme)
+        self.assertIn("| 环境状态 | 温度、湿度、PM2.5、CO2 |", readme)
+        self.assertIn(
+            "温度、湿度、PM2.5 和 CO2 均来自安装在新风管道、回风口或同类位置的独立传感器",
+            readme,
+        )
+
+    def test_readme_keeps_hacs_and_proxy_installation_paths_separate(self) -> None:
+        """A download proxy must never be presented as a HACS repository."""
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        hacs_steps = readme.split("## 快速开始", maxsplit=1)[1].split(
+            "### 中国大陆网络访问", maxsplit=1
+        )[0]
+        mainland_note = readme.split("### 中国大陆网络访问", maxsplit=1)[1]
+        normalized_mainland_note = " ".join(mainland_note.split())
+
+        self.assertIn(NEW_REPOSITORY_URL, hacs_steps)
+        self.assertNotIn("gh-proxy", hacs_steps)
+        self.assertIn("不能作为 HACS 自定义存储库地址", normalized_mainland_note)
+        self.assertIn("仅用于手动下载", normalized_mainland_note)
+        self.assertIn("https://gh-proxy.com/", mainland_note)
 
     def test_system_environment_names_do_not_claim_controller_measurements(self) -> None:
         """Temperature and humidity come from field sensors, not the MC7021 itself."""

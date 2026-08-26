@@ -1,13 +1,15 @@
 # Linking The World Temp HA
 
-`1.2.5` 是面向 **Linking The World** 小区六恒科技系统的 Home Assistant
-本地集成。它通过 MC7021 的局域网 TCP/9000 服务接入科技系统总控和房间温控面板，
-不依赖摩根云、MQTT、Mosquitto 或 MT8157 模拟设备。
+本项目用于将 **Linking The World** 小区的六恒科技系统接入 Home Assistant，
+通过家庭局域网连接 MC7021 主机，并在 Home Assistant 中提供科技系统总控、
+房间温控面板、环境状态和故障诊断。
 
 > [!IMPORTANT]
 > 这是社区项目，不是摩根官方工具。当前协议与实机验证范围以 MC7021 和已交付的六恒
 > 科技系统为主；未知主机型号、固件或状态包布局可能不兼容。首次接入未知环境时，建议
 > 先关闭控制权限，只观察状态是否稳定上报。
+
+当前稳定版本：`1.2.5`。最低支持 Home Assistant `2026.8.0`。
 
 ## 快速开始
 
@@ -18,11 +20,26 @@
    https://github.com/jieinfo/Linking-The-World-Temp-HA-Integration
    ```
 
-   类别选择“集成”。
+   类别选择“集成”。HACS 自定义存储库必须使用上面的官方 GitHub 地址。
 3. 安装 **Linking The World Temp HA**，然后重启 Home Assistant。
 4. 打开“设置 -> 设备与服务 -> 添加集成”，搜索 **Linking The World Temp HA**。
 5. 输入 MC7021 的局域网地址、本地主机账号和密码。端口通常保持 `9000`。
 6. 配置成功后会立即创建“科技系统总控”；房间面板会在收到有效上报后自动发现。
+
+### 中国大陆网络访问
+
+HACS 需要通过 GitHub 仓库身份和 GitHub API 检查版本，因此第三方下载代理不能作为
+HACS 自定义存储库地址。HACS 中请始终填写“快速开始”里的官方 GitHub 地址。
+
+如果无法直接下载源码包，可将下面的第三方加速地址仅用于手动下载当前稳定版本：
+
+```text
+https://gh-proxy.com/https://github.com/jieinfo/Linking-The-World-Temp-HA-Integration/archive/refs/tags/v1.2.5.zip
+```
+
+解压后，将其中的 `custom_components/linking_the_world_temp_ha` 目录复制到 Home
+Assistant 的 `/config/custom_components/`，然后重启 Home Assistant。手动安装不会由
+HACS 管理或自动更新；第三方服务的可用性和安全性也不由本项目保证。
 
 建议手机 App 使用 `Test` 账号，Home Assistant 使用 `admin` 账号。不要让两端复用同一
 账号，否则 MC7021 可能因会话竞争而断开其中一个客户端。
@@ -31,15 +48,15 @@
 
 | 范围 | 支持内容 |
 | --- | --- |
-| 科技系统总控 | 总开关、制冷/制热/通风/除湿模式、居家/离家场景、冬季加湿 |
+| 科技系统总控 | 总开关、制冷/制热/通风/除湿模式、居家/离家场景、冬季加湿、节能状态 |
 | 房间温控面板 | 自动发现、开关、16-28 °C 整数设温、当前温度与湿度 |
-| 环境状态 | 温度、湿度、PM2.5、CO2、节能状态 |
+| 环境状态 | 温度、湿度、PM2.5、CO2 |
 | 故障诊断 | 主机故障原始码、新风滤网故障原始码和 Home Assistant Repairs |
 | 运行诊断 | 连接阶段、失败类别、协议状态、控制权限、命令确认状态和面板数量 |
 | 平台协作 | Home Assistant 自动化、原生 Climate 卡片和 HomeKit Bridge |
 
-“温度”和“湿度”来自安装在新风管道、回风口或同类位置的独立传感器，经 Mo-Bus
-上报并由主机汇总；它们不是 MC7021 机身温湿度。
+温度、湿度、PM2.5 和 CO2 均来自安装在新风管道、回风口或同类位置的独立传感器，
+经 Mo-Bus 上报并由主机汇总；这些数值不是 MC7021 机身测量数据。
 
 实验性节能控制默认关闭。它已有协议和自动化测试，但仍需在具体主机、固件和季节工况下
 现场验证，因此不属于默认写入能力。
