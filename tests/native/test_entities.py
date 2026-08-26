@@ -13,6 +13,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
 import custom_components.linking_the_world_temp_ha.hub as hub_module
+from custom_components.linking_the_world_temp_ha.const import DOMAIN
 from custom_components.linking_the_world_temp_ha.health import HealthTracker
 from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from custom_components.linking_the_world_temp_ha.command_queue import QueuedCommand
