@@ -1,5 +1,18 @@
 # Linking The World Temp HA changelog
 
+## 1.1.0 - Full read-only technology-system status
+
+- 严格解析 MC7021 科技系统总控的 14 字节完整状态块；长度不足、超长或未知布局不再被
+  当作有效总控状态，避免字段错位后向 Home Assistant 发布错误测量值。
+- 新增节能状态、控制器温度、控制器湿度、PM2.5、CO2、系统故障码和滤网故障码七个
+  只读实体。环境测量值使用 Home Assistant 原生单位与测量状态类。
+- 系统故障与滤网故障仅公开主机上报的原始整数码：`0` 表示当前报文未报告故障，非零值
+  保留原值供诊断；在没有厂商映射证据前不猜测具体故障含义。
+- 未知模式或场景值不会阻断同一状态块内其他有效测量值；诊断下载同步包含完整总控只读
+  状态，且继续排除地址、凭据、MAC 与原始协议帧。
+- 使用授权抓包派生的脱敏真实状态帧增加协议回放，并覆盖短包、长包、未知枚举、非零故障
+  码和 Home Assistant 实体端到端测试。本版本没有增加新的写入命令。
+
 ## 1.0.3 - HACS-only distribution and release governance
 
 - 仓库现在只维护 HACS 原生集成；移除历史 MQTT Bridge 的源码、附加组件定义、Docker
