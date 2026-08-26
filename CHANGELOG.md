@@ -1,5 +1,13 @@
 # Linking The World Temp HA changelog
 
+## 1.2.2 - Fault clarity and optional entity cleanup
+
+- 系统故障原始码与滤网故障原始码收到 `0` 时改为显示“无故障”，避免普通用户把数字零
+  误认为已发生故障；非零值继续原样显示，保留厂商未知故障码的诊断价值且不猜测含义。
+- 关闭“启用实验性节能控制”并触发配置项重载时，主动删除先前注册的“节能控制”实体，
+  不再留下灰色 unavailable 项；再次启用后仍使用原 stable unique ID 正常重建。
+- 增加真实 Home Assistant 状态切换与实体注册表生命周期测试。
+
 ## 1.2.1 - Home Assistant unit compatibility
 
 - 将 PM2.5 与 CO2 实体的浓度单位迁移到 Home Assistant 2026.7 引入的
