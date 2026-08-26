@@ -1,5 +1,14 @@
 # Linking The World Temp HA changelog
 
+## 1.2.3 - Visible controller fault alerts
+
+- 主机上报非零系统故障码或滤网故障码时，分别创建 Home Assistant `ERROR` 级 Repair，
+  显示对应原始码并保留现有诊断实体；不猜测没有可靠厂商资料支持的具体故障含义。
+- 相同故障码持续上报时不重复记录日志或创建提示；故障码变化时更新同一个 Repair 并记录
+  一条新的 `ERROR` 日志，原始码恢复为 `0` 时自动清除 Repair 并记录恢复信息。
+- 故障提醒是只读诊断，不会阻断总控或房间面板的控制链路；配置项移除时同步清理其故障
+  Repair。增加系统/滤网故障出现、去重、变码、恢复和实体状态帧端到端测试。
+
 ## 1.2.2 - Fault clarity and optional entity cleanup
 
 - 系统故障原始码与滤网故障原始码收到 `0` 时改为显示“无故障”，避免普通用户把数字零
