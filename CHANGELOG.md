@@ -1,5 +1,13 @@
 # Linking The World Temp HA changelog
 
+## 1.2.4 - Official fault terminology
+
+- 按官方名称将“系统故障”统一改为“主机故障”，将“滤网故障”统一改为“新风滤网故障”；
+  同步更新诊断实体、Home Assistant Repairs、中英文翻译和用户文档。
+- 保留协议字段、实体 unique ID、Repair ID、原始码判断、告警去重和自动恢复逻辑，升级后
+  不会生成重复实体，也不会改变现有控制行为。
+- 增加仓库契约测试，防止用户界面以后重新出现非官方故障名称。
+
 ## 1.2.3 - Visible controller fault alerts
 
 - 主机上报非零系统故障码或滤网故障码时，分别创建 Home Assistant `ERROR` 级 Repair，
