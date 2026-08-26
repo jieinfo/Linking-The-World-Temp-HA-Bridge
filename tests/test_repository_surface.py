@@ -8,6 +8,12 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+OLD_REPOSITORY_URL = "https://github.com/jieinfo/" + (
+    "Linking-The-World-Temp-HA-" + "Bridge"
+)
+NEW_REPOSITORY_URL = (
+    "https://github.com/jieinfo/Linking-The-World-Temp-HA-Integration"
+)
 
 
 class RepositorySurfaceTests(unittest.TestCase):
@@ -39,6 +45,51 @@ class RepositorySurfaceTests(unittest.TestCase):
         self.assertIn("tags: ['v*']", workflow)
         self.assertIn("scripts/release_metadata.py --tag", workflow)
         self.assertNotIn("docker build", workflow)
+
+    def test_public_repository_urls_use_integration_name(self) -> None:
+        """Every maintained public link must use the renamed repository."""
+        text_suffixes = {".json", ".md", ".py", ".yaml", ".yml"}
+        old_url_locations: list[str] = []
+        for path in ROOT.rglob("*"):
+            if not path.is_file() or path.suffix not in text_suffixes:
+                continue
+            if any(part in {".git", ".venv", "__pycache__"} for part in path.parts):
+                continue
+            if OLD_REPOSITORY_URL in path.read_text(encoding="utf-8"):
+                old_url_locations.append(str(path.relative_to(ROOT)))
+
+        self.assertEqual(old_url_locations, [])
+
+        manifest = json.loads(
+            (
+                ROOT
+                / "custom_components/linking_the_world_temp_ha/manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["documentation"], NEW_REPOSITORY_URL)
+        self.assertEqual(
+            manifest["issue_tracker"], f"{NEW_REPOSITORY_URL}/issues"
+        )
+
+    def test_readme_is_task_oriented_and_points_to_detailed_guides(self) -> None:
+        """The README must lead a new household from install to support."""
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        for heading in (
+            "## 快速开始",
+            "## 支持的设备与功能",
+            "## 配置集成",
+            "## 设备与实体",
+            "## 控制规则",
+            "## 故障提醒与 Repairs",
+            "## HomeKit",
+            "## 升级与卸载",
+            "## 获取帮助",
+        ):
+            self.assertIn(heading, readme)
+        self.assertIn(NEW_REPOSITORY_URL, readme)
+        self.assertIn("docs/TROUBLESHOOTING.md", readme)
+        self.assertIn("docs/PRIVACY.md", readme)
 
     def test_system_environment_names_do_not_claim_controller_measurements(self) -> None:
         """Temperature and humidity come from field sensors, not the MC7021 itself."""

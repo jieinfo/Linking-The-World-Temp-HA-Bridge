@@ -1,5 +1,14 @@
 # Linking The World Temp HA changelog
 
+## 1.2.5 - Repository identity and documentation refresh
+
+- GitHub 仓库更名为 `Linking-The-World-Temp-HA-Integration`，并同步更新 HACS 安装地址、
+  manifest 文档地址、问题反馈地址和仓库契约测试。
+- 重新编写 README，按快速开始、支持范围、配置、设备实体、控制规则、故障提醒、HomeKit、
+  升级卸载、隐私诊断和获取帮助组织内容，减少重复说明并优先呈现普通用户常用流程。
+- 保持集成 domain、配置条目、设备标识、实体 unique ID、实体名称与排序不变；本版本不改变
+  协议解析、状态同步或控制行为。
+
 ## 1.2.4 - Official fault terminology
 
 - 按官方名称将“系统故障”统一改为“主机故障”，将“滤网故障”统一改为“新风滤网故障”；
