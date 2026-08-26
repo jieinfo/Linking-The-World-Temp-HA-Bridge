@@ -692,12 +692,14 @@ async def test_energy_control_confirmation_is_independent_of_mode_and_scene(
             controller["energy_saving"] = False
             await fake_controller.async_send_status(status())
             await _wait_for(lambda: hub.state.energy_saving == "OFF")
-            await hub.async_set_energy_saving(True)
-            await _wait_for(
-                lambda: hub.state.energy_saving == "ON"
-                and "system" not in hub._pending
-            )
-            expected_commands.append((6, 1))
+            for enabled in (True, False):
+                await hub.async_set_energy_saving(enabled)
+                expected_state = "ON" if enabled else "OFF"
+                await _wait_for(
+                    lambda: hub.state.energy_saving == expected_state
+                    and "system" not in hub._pending
+                )
+                expected_commands.append((6, int(enabled)))
 
     assert commands == expected_commands
 
