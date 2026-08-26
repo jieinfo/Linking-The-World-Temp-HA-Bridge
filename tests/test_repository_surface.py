@@ -51,6 +51,44 @@ class RepositorySurfaceTests(unittest.TestCase):
             self.assertEqual(sensors["system_temperature"]["name"], "温度")
             self.assertEqual(sensors["system_humidity"]["name"], "湿度")
 
+    def test_fault_names_follow_official_terminology(self) -> None:
+        """Fault sensors and Repairs must use the two official fault names."""
+        for relative_path in (
+            "custom_components/linking_the_world_temp_ha/strings.json",
+            "custom_components/linking_the_world_temp_ha/translations/zh-Hans.json",
+        ):
+            document = json.loads((ROOT / relative_path).read_text(encoding="utf-8"))
+            sensors = document["entity"]["sensor"]
+            issues = document["issues"]
+            self.assertEqual(
+                sensors["system_fault_code"]["name"], "主机故障原始码"
+            )
+            self.assertEqual(
+                sensors["filter_fault_code"]["name"], "新风滤网故障原始码"
+            )
+            self.assertEqual(issues["system_fault"]["title"], "主机故障")
+            self.assertEqual(issues["filter_fault"]["title"], "新风滤网故障")
+
+        english = json.loads(
+            (
+                ROOT
+                / "custom_components/linking_the_world_temp_ha/translations/en.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            english["entity"]["sensor"]["system_fault_code"]["name"],
+            "Controller fault raw code",
+        )
+        self.assertEqual(
+            english["entity"]["sensor"]["filter_fault_code"]["name"],
+            "Fresh-air filter fault raw code",
+        )
+        self.assertEqual(english["issues"]["system_fault"]["title"], "Controller fault")
+        self.assertEqual(
+            english["issues"]["filter_fault"]["title"],
+            "Fresh-air filter fault",
+        )
+
     def test_sensor_units_use_current_home_assistant_enums(self) -> None:
         """HA 2026.7+ concentration units must not emit deprecation warnings."""
         sensor_source = (
