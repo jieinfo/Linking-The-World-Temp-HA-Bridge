@@ -61,6 +61,9 @@
           "command_confirmation_timeout": "命令确认超时（秒）",
           "controller_silence_timeout": "主机静默重连时间（秒）",
           "thermostat_offline_after": "面板无上报离线时间（秒，0 表示关闭）"
+        },
+        "data_description": {
+          "enable_experimental_energy_control": "默认关闭。启用后注册节能控制实体；仍需开启总控制权限，并在当前主机和固件上现场验证状态回传。"
         }
       }
     }

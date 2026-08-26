@@ -61,6 +61,9 @@
           "command_confirmation_timeout": "Command confirmation timeout (seconds)",
           "controller_silence_timeout": "Controller silence timeout (seconds)",
           "thermostat_offline_after": "Panel offline timeout (seconds; 0 disables)"
+        },
+        "data_description": {
+          "enable_experimental_energy_control": "Disabled by default. Enabling registers the energy-saving control entity; global control permission and on-site state-return validation are still required for this controller and firmware."
         }
       }
     }
