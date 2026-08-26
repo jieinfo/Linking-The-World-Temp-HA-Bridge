@@ -1,6 +1,6 @@
 # Linking The World Temp HA 故障排查
 
-本文适用于 HACS 集成 **Linking The World Temp HA 1.2.0**，最低支持
+本文适用于 HACS 集成 **Linking The World Temp HA 1.2.1**，最低支持
 Home Assistant `2026.8.0`。
 
 ## 开始前

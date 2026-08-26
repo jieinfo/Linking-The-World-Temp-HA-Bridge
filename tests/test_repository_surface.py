@@ -50,3 +50,14 @@ class RepositorySurfaceTests(unittest.TestCase):
             sensors = document["entity"]["sensor"]
             self.assertEqual(sensors["system_temperature"]["name"], "温度")
             self.assertEqual(sensors["system_humidity"]["name"], "湿度")
+
+    def test_sensor_units_use_current_home_assistant_enums(self) -> None:
+        """HA 2026.7+ concentration units must not emit deprecation warnings."""
+        sensor_source = (
+            ROOT / "custom_components/linking_the_world_temp_ha/sensor.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("UnitOfDensity.MICROGRAMS_PER_CUBIC_METER", sensor_source)
+        self.assertIn("UnitOfRatio.PARTS_PER_MILLION", sensor_source)
+        self.assertNotIn("CONCENTRATION_MICROGRAMS_PER_CUBIC_METER", sensor_source)
+        self.assertNotIn("CONCENTRATION_PARTS_PER_MILLION", sensor_source)

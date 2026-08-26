@@ -1,6 +1,6 @@
 # Linking The World Temp HA
 
-`1.2.0` 是面向 **Linking The World** 小区六恒科技系统的本地 Home
+`1.2.1` 是面向 **Linking The World** 小区六恒科技系统的本地 Home
 Assistant 原生集成。它通过 MC7021 已启用的本地 `yashcp` TCP/9000 通讯，直接
 将六恒总控和房间温控面板接入 Home Assistant；不依赖摩根云、MQTT、Mosquitto 或
 MT8157 模拟设备。
