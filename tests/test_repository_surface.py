@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import unittest
 
 
@@ -38,3 +39,14 @@ class RepositorySurfaceTests(unittest.TestCase):
         self.assertIn("tags: ['v*']", workflow)
         self.assertIn("scripts/release_metadata.py --tag", workflow)
         self.assertNotIn("docker build", workflow)
+
+    def test_system_environment_names_do_not_claim_controller_measurements(self) -> None:
+        """Temperature and humidity come from field sensors, not the MC7021 itself."""
+        for relative_path in (
+            "custom_components/linking_the_world_temp_ha/strings.json",
+            "custom_components/linking_the_world_temp_ha/translations/zh-Hans.json",
+        ):
+            document = json.loads((ROOT / relative_path).read_text(encoding="utf-8"))
+            sensors = document["entity"]["sensor"]
+            self.assertEqual(sensors["system_temperature"]["name"], "温度")
+            self.assertEqual(sensors["system_humidity"]["name"], "湿度")

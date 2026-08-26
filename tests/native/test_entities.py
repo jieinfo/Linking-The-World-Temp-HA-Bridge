@@ -28,6 +28,7 @@ from custom_components.linking_the_world_temp_ha.select import SystemModeSelect
 from custom_components.linking_the_world_temp_ha.switch import (
     SystemPowerSwitch,
     WinterHumidifierSwitch,
+    async_setup_entry as async_setup_switches,
 )
 
 
@@ -598,6 +599,107 @@ async def test_full_system_status_exposes_read_only_environment_and_fault_entiti
     for (platform, key), expected in expected_states.items():
         entity_id = _entity_id(hass, hub.entry.entry_id, platform, key)
         assert hass.states.get(entity_id).state == expected
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_energy_control_entity_requires_explicit_experimental_opt_in(
+    hass, setup_integration
+) -> None:
+    """The writable energy switch stays absent until the user opts in."""
+    hub = setup_integration.hub
+    added = []
+
+    hub.enable_experimental_energy_control = False
+    await async_setup_switches(hass, hub.entry, added.extend)
+    assert all(entity._attr_unique_id != f"{hub.entry.entry_id}_energy_control" for entity in added)
+
+    added.clear()
+    hub.enable_experimental_energy_control = True
+    await async_setup_switches(hass, hub.entry, added.extend)
+    assert any(entity._attr_unique_id == f"{hub.entry.entry_id}_energy_control" for entity in added)
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_energy_control_uses_command_06_and_controller_push_confirmation(
+    setup_integration, fake_controller
+) -> None:
+    """Energy control is confirmed only by the matching full status report."""
+    hub = setup_integration.hub
+    hub.enable_experimental_energy_control = True
+    await fake_controller.async_send_status(
+        _system_status(hub, power=False, energy_saving=False)
+    )
+    await _wait_for(lambda: hub.available and hub.state.energy_saving == "OFF")
+    commands: list[tuple[int, int]] = []
+
+    async def acknowledge_command(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) != hub.tech_system_mac:
+            return
+        command = fields.get(0x0009, b"\x00")[0]
+        value = fields.get(0x000A, b"\x00")[0]
+        commands.append((command, value))
+        await fake_controller.async_send_status(
+            _system_status(hub, power=False, energy_saving=bool(value))
+        )
+
+    fake_controller.on_command = acknowledge_command
+    await hub.async_set_energy_saving(True)
+    assert hub._pending["system"].expected == {"energy_saving": "ON"}
+    await _wait_for(
+        lambda: hub.state.energy_saving == "ON" and "system" not in hub._pending
+    )
+    assert commands == [(6, 1)]
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_energy_control_confirmation_is_independent_of_mode_and_scene(
+    setup_integration, fake_controller
+) -> None:
+    """All verified mode/scene combinations preserve command 0x06 semantics."""
+    hub = setup_integration.hub
+    hub.enable_experimental_energy_control = True
+    hub.command_min_interval = 0
+    controller = {"mode": 1, "scene": 0, "energy_saving": False}
+    commands: list[tuple[int, int]] = []
+
+    def status() -> bytes:
+        return _system_status(
+            hub,
+            power=False,
+            mode=controller["mode"],
+            scene=controller["scene"],
+            energy_saving=controller["energy_saving"],
+        )
+
+    async def acknowledge_command(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        command = fields.get(0x0009, b"\x00")[0]
+        value = fields.get(0x000A, b"\x00")[0]
+        commands.append((command, value))
+        controller["energy_saving"] = bool(value)
+        await fake_controller.async_send_status(status())
+
+    fake_controller.on_command = acknowledge_command
+    await fake_controller.async_send_status(status())
+    await _wait_for(lambda: hub.available)
+
+    expected_commands = []
+    for mode in range(1, 5):
+        for scene in range(2):
+            controller["mode"] = mode
+            controller["scene"] = scene
+            controller["energy_saving"] = False
+            await fake_controller.async_send_status(status())
+            await _wait_for(lambda: hub.state.energy_saving == "OFF")
+            await hub.async_set_energy_saving(True)
+            await _wait_for(
+                lambda: hub.state.energy_saving == "ON"
+                and "system" not in hub._pending
+            )
+            expected_commands.append((6, 1))
+
+    assert commands == expected_commands
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
