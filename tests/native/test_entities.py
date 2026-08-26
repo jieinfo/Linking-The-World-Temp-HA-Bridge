@@ -600,6 +600,20 @@ async def test_full_system_status_exposes_read_only_environment_and_fault_entiti
         entity_id = _entity_id(hass, hub.entry.entry_id, platform, key)
         assert hass.states.get(entity_id).state == expected
 
+    await fake_controller.async_send_status(
+        _system_status(
+            hub,
+            power=True,
+            system_fault_code=0,
+            filter_fault_code=0,
+        )
+    )
+    await _wait_for(lambda: hub.state.filter_fault_code == 0)
+    await hass.async_block_till_done()
+    for key in ("system_fault_code", "filter_fault_code"):
+        entity_id = _entity_id(hass, hub.entry.entry_id, "sensor", key)
+        assert hass.states.get(entity_id).state == "无故障"
+
 
 @pytest.mark.usefixtures("enable_custom_integrations")
 async def test_energy_control_entity_requires_explicit_experimental_opt_in(
@@ -617,6 +631,29 @@ async def test_energy_control_entity_requires_explicit_experimental_opt_in(
     hub.enable_experimental_energy_control = True
     await async_setup_switches(hass, hub.entry, added.extend)
     assert any(entity._attr_unique_id == f"{hub.entry.entry_id}_energy_control" for entity in added)
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_disabling_energy_control_removes_its_registry_entry(
+    hass, setup_integration
+) -> None:
+    """An opt-out removes the previously registered experimental entity."""
+    hub = setup_integration.hub
+    registry = er.async_get(hass)
+    unique_id = f"{hub.entry.entry_id}_energy_control"
+    registered = registry.async_get_or_create(
+        "switch",
+        DOMAIN,
+        unique_id,
+        config_entry=hub.entry,
+        original_name="节能控制",
+    )
+    assert registry.async_get(registered.entity_id) is not None
+
+    hub.enable_experimental_energy_control = False
+    await async_setup_switches(hass, hub.entry, lambda entities: None)
+
+    assert registry.async_get_entity_id("switch", DOMAIN, unique_id) is None
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

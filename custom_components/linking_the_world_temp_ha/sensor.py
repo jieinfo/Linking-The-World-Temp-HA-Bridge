@@ -27,6 +27,13 @@ from .entity import LinkingTempEntity, LinkingThermostatEntity
 from .hub import LinkingTempHub
 
 
+def _fault_code_state(code: int | None) -> int | str | None:
+    """Present zero as healthy while preserving every unknown nonzero code."""
+    if code is None:
+        return None
+    return "无故障" if code == 0 else code
+
+
 @dataclass(frozen=True)
 class DiagnosticDescription:
     key: str
@@ -107,14 +114,14 @@ SYSTEM_STATUS_SENSORS = (
     SystemStatusDescription(
         "system_fault_code",
         "system_fault_code",
-        lambda hub: hub.state.system_fault_code,
+        lambda hub: _fault_code_state(hub.state.system_fault_code),
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:alert-circle-outline",
     ),
     SystemStatusDescription(
         "filter_fault_code",
         "filter_fault_code",
-        lambda hub: hub.state.filter_fault_code,
+        lambda hub: _fault_code_state(hub.state.filter_fault_code),
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:air-filter",
     ),
