@@ -356,6 +356,13 @@ async def test_diagnostics_redact_all_secret_canaries_and_anonymize_panels(
         },
     )
     hub = await _hub_with_two_panels(hass, mock_config_entry)
+    hub.state.energy_saving = "ON"
+    hub.state.temperature = 25.4
+    hub.state.humidity = 65
+    hub.state.pm25 = 12.3
+    hub.state.co2 = 700
+    hub.state.system_fault_code = 42
+    hub.state.filter_fault_code = 7
     hub.controller_public_key = canaries["public_key"]
     hub.session_token = canaries["token"]
     hub.last_connection_error = (
@@ -381,6 +388,19 @@ async def test_diagnostics_redact_all_secret_canaries_and_anonymize_panels(
     assert {panel["room"] for panel in result["runtime"]["panels"].values()} == {
         "room_01",
         "room_02",
+    }
+    assert result["runtime"]["system_state"] == {
+        "power": None,
+        "mode": None,
+        "scene": None,
+        "winter_humidifier": None,
+        "energy_saving": "ON",
+        "temperature": 25.4,
+        "humidity": 65,
+        "pm25": 12.3,
+        "co2": 700,
+        "system_fault_code": 42,
+        "filter_fault_code": 7,
     }
 
 

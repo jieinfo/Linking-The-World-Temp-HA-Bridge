@@ -44,8 +44,32 @@ class ProtocolVerifiedSensor(LinkingTempEntity, BinarySensorEntity):
         return True
 
 
+class EnergySavingSensor(LinkingTempEntity, BinarySensorEntity):
+    """Expose the controller-reported energy-saving state as read-only."""
+
+    _attr_translation_key = "energy_saving"
+    _attr_icon = "mdi:leaf"
+
+    def __init__(self, hub: LinkingTempHub) -> None:
+        super().__init__(hub, "energy_saving")
+
+    @property
+    def is_on(self) -> bool:
+        return self.hub.state.energy_saving == "ON"
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.hub.state.energy_saving is not None
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     hub: LinkingTempHub = entry.runtime_data.hub
-    async_add_entities([ControllerConnectionSensor(hub), ProtocolVerifiedSensor(hub)])
+    async_add_entities(
+        [
+            ControllerConnectionSensor(hub),
+            ProtocolVerifiedSensor(hub),
+            EnergySavingSensor(hub),
+        ]
+    )

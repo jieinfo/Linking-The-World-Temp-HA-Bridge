@@ -37,6 +37,25 @@
       "frame_hex": "234100646f6f79617368637001050c0000300004000800ff00ffffffff01ff75000800ff00ffffffff00ff30000600726f6f6d30310a00050030380140000b0001000123",
       "message": [5, 12],
       "mac": "ff00ffffffff01ff"
+    },
+    {
+      "name": "tech_system_status_cool_home",
+      "frame_hex": "238c00646f6f79617368637001050c00007b001b00010003110001000104000800ff00ffffffff00ff600001000198000100219c00010000720001000086000100015f00010000010201000275000800ff00ffffffff00ff31000200205830000500723031303006000c00e4b889e68192e680bbe68ea70b000100000a000e000101000049013e003200f001000023",
+      "message": [5, 12],
+      "mac": "ff00ffffffff00ff",
+      "tech_system_state": {
+        "power": "OFF",
+        "mode": "cool",
+        "scene": "home",
+        "winter_humidifier": "OFF",
+        "energy_saving": "OFF",
+        "temperature": 32.9,
+        "humidity": 62,
+        "pm25": 5.0,
+        "co2": 496,
+        "system_fault_code": 0,
+        "filter_fault_code": 0
+      }
     }
   ]
 }

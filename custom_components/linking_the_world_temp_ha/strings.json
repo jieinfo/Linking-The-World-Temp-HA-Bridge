@@ -115,7 +115,8 @@
   "entity": {
     "binary_sensor": {
       "controller_connection": {"name": "主机连接"},
-      "protocol_verified": {"name": "协议兼容"}
+      "protocol_verified": {"name": "协议兼容"},
+      "energy_saving": {"name": "节能状态"}
     },
     "climate": {
       "room_thermostat": {"name": "温控"}
@@ -169,7 +170,13 @@
       },
       "panel_count": {"name": "已发现面板数量"},
       "automation_temperature": {"name": "自动化温度"},
-      "automation_humidity": {"name": "自动化湿度"}
+      "automation_humidity": {"name": "自动化湿度"},
+      "system_temperature": {"name": "主机温度"},
+      "system_humidity": {"name": "主机湿度"},
+      "system_pm25": {"name": "PM2.5"},
+      "system_co2": {"name": "CO₂"},
+      "system_fault_code": {"name": "系统故障原始码"},
+      "filter_fault_code": {"name": "滤网故障原始码"}
     },
     "switch": {
       "system_power": {"name": "总开关"},

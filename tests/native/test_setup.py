@@ -36,7 +36,7 @@ def _system_status(hub, *, power: bool = True) -> bytes:
     return (
         tlv(0x0004, hub.tech_system_mac)
         + tlv(0x000B, bytes((power,)))
-        + tlv(0x000A, b"\x01\x01\x00")
+        + tlv(0x000A, bytes.fromhex("0101000049013e003200f0010000"))
     )
 
 
@@ -318,7 +318,7 @@ async def test_connection_sensor_waits_for_ready_status_stream(
     await fake_controller.async_send_status(
         tlv(0x0004, runtime.hub.tech_system_mac)
         + tlv(0x000B, b"\x00")
-        + tlv(0x000A, b"\x01\x01\x00")
+        + tlv(0x000A, bytes.fromhex("0101000049013e003200f0010000"))
     )
     async with asyncio.timeout(1):
         while not runtime.hub.available:

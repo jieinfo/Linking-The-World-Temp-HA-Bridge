@@ -38,12 +38,32 @@ async def _wait_for(predicate, *, timeout: float = 1) -> None:
             await asyncio.sleep(0)
 
 
-def _system_status(hub: LinkingTempHub, *, power: bool, mode: int = 1, scene: int = 1, humidifier: bool = False) -> bytes:
+def _system_status(
+    hub: LinkingTempHub,
+    *,
+    power: bool,
+    mode: int = 1,
+    scene: int = 1,
+    humidifier: bool = False,
+    energy_saving: bool = False,
+    temperature: float = 32.9,
+    humidity: int = 62,
+    pm25: float = 5.0,
+    co2: int = 496,
+    system_fault_code: int = 0,
+    filter_fault_code: int = 0,
+) -> bytes:
     """Build one verified total-control report using the captured TLV shape."""
+    packed = bytes((mode, scene, humidifier, energy_saving))
+    packed += round(temperature * 10).to_bytes(2, "little")
+    packed += humidity.to_bytes(2, "little")
+    packed += round(pm25 * 10).to_bytes(2, "little")
+    packed += co2.to_bytes(2, "little")
+    packed += bytes((system_fault_code, filter_fault_code))
     return (
         tlv(0x0004, hub.tech_system_mac)
         + tlv(0x000B, bytes((power,)))
-        + tlv(0x000A, bytes((mode, scene, humidifier)))
+        + tlv(0x000A, packed)
     )
 
 
@@ -542,6 +562,42 @@ async def test_system_mode_scene_and_humidifier_follow_controller_push_state(
         blocking=True,
     )
     await _wait_for(lambda: hub.state.power == "OFF")
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_full_system_status_exposes_read_only_environment_and_fault_entities(
+    hass, setup_integration, fake_controller
+) -> None:
+    """One controller push updates every verified 14-byte read-only field."""
+    hub = setup_integration.hub
+    await fake_controller.async_send_status(
+        _system_status(
+            hub,
+            power=True,
+            energy_saving=True,
+            temperature=25.4,
+            humidity=65,
+            pm25=12.3,
+            co2=700,
+            system_fault_code=42,
+            filter_fault_code=7,
+        )
+    )
+    await _wait_for(lambda: hub.state.filter_fault_code == 7)
+    await hass.async_block_till_done()
+
+    expected_states = {
+        ("binary_sensor", "energy_saving"): "on",
+        ("sensor", "system_temperature"): "25.4",
+        ("sensor", "system_humidity"): "65",
+        ("sensor", "system_pm25"): "12.3",
+        ("sensor", "system_co2"): "700",
+        ("sensor", "system_fault_code"): "42",
+        ("sensor", "filter_fault_code"): "7",
+    }
+    for (platform, key), expected in expected_states.items():
+        entity_id = _entity_id(hass, hub.entry.entry_id, platform, key)
+        assert hass.states.get(entity_id).state == expected
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

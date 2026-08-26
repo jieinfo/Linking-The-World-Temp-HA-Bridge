@@ -116,7 +116,8 @@
   "entity": {
     "binary_sensor": {
       "controller_connection": {"name": "Controller connection"},
-      "protocol_verified": {"name": "Protocol compatible"}
+      "protocol_verified": {"name": "Protocol compatible"},
+      "energy_saving": {"name": "Energy-saving state"}
     },
     "climate": {"room_thermostat": {"name": "Thermostat"}},
     "select": {
@@ -168,7 +169,13 @@
       },
       "panel_count": {"name": "Discovered panel count"},
       "automation_temperature": {"name": "Automation temperature"},
-      "automation_humidity": {"name": "Automation humidity"}
+      "automation_humidity": {"name": "Automation humidity"},
+      "system_temperature": {"name": "Controller temperature"},
+      "system_humidity": {"name": "Controller humidity"},
+      "system_pm25": {"name": "PM2.5"},
+      "system_co2": {"name": "CO₂"},
+      "system_fault_code": {"name": "System fault raw code"},
+      "filter_fault_code": {"name": "Filter fault raw code"}
     },
     "switch": {
       "system_power": {"name": "System power"},
