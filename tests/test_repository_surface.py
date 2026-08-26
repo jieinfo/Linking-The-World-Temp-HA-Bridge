@@ -113,20 +113,16 @@ class RepositorySurfaceTests(unittest.TestCase):
             readme,
         )
 
-    def test_readme_keeps_hacs_and_proxy_installation_paths_separate(self) -> None:
-        """A download proxy must never be presented as a HACS repository."""
+    def test_readme_uses_only_the_official_hacs_repository(self) -> None:
+        """The README must not advertise third-party download proxies."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         hacs_steps = readme.split("## 快速开始", maxsplit=1)[1].split(
-            "### 中国大陆网络访问", maxsplit=1
+            "## 支持的设备与功能", maxsplit=1
         )[0]
-        mainland_note = readme.split("### 中国大陆网络访问", maxsplit=1)[1]
-        normalized_mainland_note = " ".join(mainland_note.split())
 
         self.assertIn(NEW_REPOSITORY_URL, hacs_steps)
-        self.assertNotIn("gh-proxy", hacs_steps)
-        self.assertIn("不能作为 HACS 自定义存储库地址", normalized_mainland_note)
-        self.assertIn("仅用于手动下载", normalized_mainland_note)
-        self.assertIn("https://gh-proxy.com/", mainland_note)
+        self.assertNotIn("中国大陆网络访问", readme)
+        self.assertNotIn("gh-proxy", readme)
 
     def test_system_environment_names_do_not_claim_controller_measurements(self) -> None:
         """Temperature and humidity come from field sensors, not the MC7021 itself."""

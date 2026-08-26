@@ -26,21 +26,6 @@
 5. 输入 MC7021 的局域网地址、本地主机账号和密码。端口通常保持 `9000`。
 6. 配置成功后会立即创建“科技系统总控”；房间面板会在收到有效上报后自动发现。
 
-### 中国大陆网络访问
-
-HACS 需要通过 GitHub 仓库身份和 GitHub API 检查版本，因此第三方下载代理不能作为
-HACS 自定义存储库地址。HACS 中请始终填写“快速开始”里的官方 GitHub 地址。
-
-如果无法直接下载源码包，可将下面的第三方加速地址仅用于手动下载当前稳定版本：
-
-```text
-https://gh-proxy.com/https://github.com/jieinfo/Linking-The-World-Temp-HA-Integration/archive/refs/tags/v1.2.5.zip
-```
-
-解压后，将其中的 `custom_components/linking_the_world_temp_ha` 目录复制到 Home
-Assistant 的 `/config/custom_components/`，然后重启 Home Assistant。手动安装不会由
-HACS 管理或自动更新；第三方服务的可用性和安全性也不由本项目保证。
-
 建议手机 App 使用 `Test` 账号，Home Assistant 使用 `admin` 账号。不要让两端复用同一
 账号，否则 MC7021 可能因会话竞争而断开其中一个客户端。
 
