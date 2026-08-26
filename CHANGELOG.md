@@ -1,5 +1,14 @@
 # Linking The World Temp HA changelog
 
+## 1.0.3 - HACS-only distribution and release governance
+
+- 仓库现在只维护 HACS 原生集成；移除历史 MQTT Bridge 的源码、附加组件定义、Docker
+  构建、同步脚本、示例配置和专用协议测试。历史版本仍可通过 Git 历史查看。
+- 发布校验将 `manifest.json`、CHANGELOG 首节、README 当前版本和正式 `vX.Y.Z` 标签
+  视为同一个版本事实；任一不一致都会阻止 CI 通过。
+- 在干净 CI 运行器中保留 HACS 校验，并以全新 Home Assistant 配置条目加载/重载作为
+  发布前安装升级烟测，避免主分支留下旧实现或不完整的发布元数据。
+
 ## 1.0.2 - Total-control command coordination and diagnostics
 
 - 六恒总开关、模式、场景和冬季加湿统一使用串行 latest-value 命令队列；上一条命令等待
@@ -29,7 +38,6 @@
 ## 1.0.0 - Native integration stable release preparation
 
 - 将原生 HACS 集成版本设为 `1.0.0`，最低 Home Assistant 版本设为 `2026.8.0`。
-  旧 **Linking The World Temp Bridge** 附加组件的名称、版本和发布记录保持不变。
 - 使用真实 Home Assistant pytest 运行时及可编程 MC7021 服务器覆盖配置、加载、卸载、
   重载、重连、实体、动态面板、命令确认、协议分帧和压力场景；CI 对最低 2026.8 基线和
   当前受支持运行时执行 95% 覆盖率门槛。两项运行时均使用 Python `3.14` 和上游要求的
@@ -109,4 +117,3 @@
 - 原生提供科技系统总开关、中文模式/场景、冬季加湿和房间 Climate 实体。
 - 按主机状态上报动态发现任意数量的房间温控面板，并持久保存设备清单。
 - 提供平滑温湿度、连接状态、协议验证、控制权限、最近命令和面板数量诊断实体。
-- 保留原有 Linking The World Temp Bridge 附加组件，作为独立的兼容交付路径。

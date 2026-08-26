@@ -1,7 +1,7 @@
 blueprint:
   name: Linking The World - 平滑测量值持续低于阈值
   description: >-
-    使用 Linking The World Temp Bridge 的“自动化温度”或“自动化湿度”实体。
+    使用 Linking The World Temp HA 的“自动化温度”或“自动化湿度”实体。
     仅当平滑后的读数持续低于阈值一段时间后才执行动作。
   domain: automation
   input:

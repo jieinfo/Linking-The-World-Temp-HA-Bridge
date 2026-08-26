@@ -3,6 +3,7 @@ name: Validate native integration
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 jobs:

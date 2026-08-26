@@ -1,15 +1,12 @@
 # Linking The World Temp HA
 
-`1.0.2` 是面向 **Linking The World** 小区六恒科技系统的本地 Home
+`1.0.3` 是面向 **Linking The World** 小区六恒科技系统的本地 Home
 Assistant 原生集成。它通过 MC7021 已启用的本地 `yashcp` TCP/9000 通讯，直接
 将六恒总控和房间温控面板接入 Home Assistant；不依赖摩根云、MQTT、Mosquitto 或
 MT8157 模拟设备。
 
-本项目同时保留旧的 **Linking The World Temp Bridge** 附加组件，供已有部署继续
-使用。新部署应使用本原生集成。
-
-> 原生集成和旧 Bridge 不能同时连接同一台 MC7021。主机的登录会话和账号并发有限，
-> 同时运行可能使 App、Bridge 或原生集成之一掉线。
+本仓库仅发布此 HACS 原生集成。历史 MQTT Bridge 可在 Git 历史中查阅，但不再提供
+安装、构建或维护入口。
 
 ## 支持范围
 
@@ -48,8 +45,8 @@ MT8157 模拟设备。
 6. 初次登录后会建立总控实体；房间面板会在有效状态上报中被发现。保存过的面板在
    HA 重启后会先显示为不可用，收到新的有效面板上报后恢复。
 
-建议手机 App 使用 `Test` 账号，HA 原生集成使用 `admin` 账号。不要让 App、Bridge
-和原生集成复用同一个账号；这能减少 MC7021 会话竞争，也便于分辨哪一端正在控制。
+建议手机 App 使用 `Test` 账号，HA 原生集成使用 `admin` 账号。不要让 App 和原生集成
+复用同一个账号；这能减少 MC7021 会话竞争，也便于分辨哪一端正在控制。
 
 ## 连接、认证与 Repairs
 
@@ -84,18 +81,6 @@ Repair；协议不兼容会生成单独的固件/协议 Repair；面板达到长
 时删除设备记录，并最终删除保存的面板记录；取消没有任何数据变化。删除后同一面板
 再次上报会被重新发现。
 
-## 从旧 Bridge 迁移
-
-1. 停止 **Linking The World Temp Bridge** 附加组件，避免双连接。
-2. 添加原生集成，确认总控及每个房间面板都已显示并在“已就绪”状态下更新。
-3. 将仪表盘、自动化和 HomeKit Bridge 从旧 MQTT 实体改为原生实体。
-4. 确认迁移稳定后，再删除旧 Bridge 创建的 MQTT 设备或禁用旧实体。
-
-Home Assistant 在初次添加时生成原生 `entity_id`，因此不会自动重写旧 MQTT 自动化。
-旧附加组件的名称 **Linking The World Temp Bridge**、其 `config.yaml` 版本和
-`linking_the_world_temp_ha_bridge_addon/CHANGELOG.md` 均保持独立，未因原生集成
-`1.0.0` 而改版。
-
 ## 隐私与诊断
 
 诊断下载包含连接阶段、失败类别、有限的运行计数、命令确认延迟、匿名化的面板/房间
@@ -118,18 +103,9 @@ Home Assistant 在初次添加时生成原生 `entity_id`，因此不会自动�
 本次环境中的模式控制路径，不代表所有固件、户型和功能均已现场覆盖；其他环境仍应执行
 [发布与现场核对表](docs/TROUBLESHOOTING.md#发布与现场核对表)。
 
-## 保留的附加组件
+## 发布治理
 
-已有用户仍可在“设置 -> 附加组件 -> 附加组件商店”添加本仓库，安装
-**Linking The World Temp Bridge** 并按其自身说明配置主机和 MQTT。它继续作为独立的
-兼容交付路径；新安装不需要它。
-
-## 开发维护
-
-旧 Bridge 的根目录 `bridge.py` 是其唯一源码。附加组件运行副本由以下命令同步；原生
-集成发布不会改动旧附加组件版本。
-
-```sh
-python scripts/sync_addon_bridge.py
-python scripts/sync_addon_bridge.py --check
-```
+每个发布在干净的 CI 运行器中执行 HACS 校验、全新 Home Assistant 配置条目加载与重载
+烟测。CI 会验证 `manifest.json`、CHANGELOG 首节和 README 标注的版本完全一致；当由
+`vX.Y.Z` 标签触发时，还会验证标签与这三个发布事实一致。只有这些检查通过，才创建正式
+GitHub Release。

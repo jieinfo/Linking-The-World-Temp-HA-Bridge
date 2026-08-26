@@ -57,10 +57,9 @@ ID 及科技系统总控 MAC。此类数据由 Home Assistant 管理，用于建
 
 建议 App 使用 `Test` 账号、Home Assistant 使用 `admin` 账号，以降低主机会话竞争风险。
 这不是访问控制替代方案：应继续保护 Home Assistant、MC7021 局域网和备份，并且不要将
-TCP/9000 暴露到公网。停用或迁移旧 **Linking The World Temp Bridge** 前，也请确认它
-不再使用同一 MC7021 会话。
+TCP/9000 暴露到公网。
 
 ## 维护范围
 
-本隐私说明描述原生集成 `1.0.0`。旧 **Linking The World Temp Bridge** 仍是独立的
-附加组件，具有自己的 MQTT 配置、日志和发布版本；原生集成版本更新不改变它的行为。
+本隐私说明描述 HACS 原生集成 `1.0.3`。本仓库不再发布独立 MQTT Bridge，也不会处理
+该历史实现的配置、日志或运行数据。
