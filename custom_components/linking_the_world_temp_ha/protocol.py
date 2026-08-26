@@ -35,6 +35,7 @@ COMMAND_POWER_ON = 2
 COMMAND_MODE = 3
 COMMAND_SCENE = 4
 COMMAND_WINTER_HUMIDIFIER = 5
+COMMAND_ENERGY_SWITCH = 6
 
 MODE_NAMES = {value: name for name, value in MODE_VALUES.items()}
 SCENE_NAMES = {value: name for name, value in SCENE_VALUES.items()}

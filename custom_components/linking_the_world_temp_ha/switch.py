@@ -53,8 +53,37 @@ class WinterHumidifierSwitch(LinkingTempEntity, SwitchEntity):
         await self.hub.async_set_winter_humidifier(False)
 
 
+class EnergyControlSwitch(LinkingTempEntity, SwitchEntity):
+    """Opt-in writable control for the controller-reported energy state."""
+
+    _attr_translation_key = "energy_control"
+    _attr_icon = "mdi:leaf"
+
+    def __init__(self, hub: LinkingTempHub) -> None:
+        super().__init__(hub, "energy_control")
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.hub.state.energy_saving is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        if self.hub.state.energy_saving is None:
+            return None
+        return self.hub.state.energy_saving == "ON"
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.hub.async_set_energy_saving(True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.hub.async_set_energy_saving(False)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     hub: LinkingTempHub = entry.runtime_data.hub
-    async_add_entities([SystemPowerSwitch(hub), WinterHumidifierSwitch(hub)])
+    entities = [SystemPowerSwitch(hub), WinterHumidifierSwitch(hub)]
+    if hub.enable_experimental_energy_control:
+        entities.append(EnergyControlSwitch(hub))
+    async_add_entities(entities)

@@ -30,6 +30,7 @@ from .const import (
     CONF_COMMAND_CONFIRMATION_TIMEOUT,
     CONF_COMMAND_MIN_INTERVAL,
     CONF_CONTROLLER_SILENCE_TIMEOUT,
+    CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
     CONF_TECH_SYSTEM_MAC,
     CONF_THERMOSTAT_OFFLINE_AFTER,
     DEFAULT_ALLOW_CONTROL,
@@ -37,6 +38,7 @@ from .const import (
     DEFAULT_COMMAND_CONFIRMATION_TIMEOUT,
     DEFAULT_COMMAND_MIN_INTERVAL,
     DEFAULT_CONTROLLER_SILENCE_TIMEOUT,
+    DEFAULT_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
     DEFAULT_TECH_SYSTEM_MAC,
     DEFAULT_THERMOSTAT_OFFLINE_AFTER,
     DOMAIN,
@@ -46,6 +48,7 @@ from .const import (
     THERMOSTAT_MIN_TEMPERATURE,
 )
 from .protocol import (
+    COMMAND_ENERGY_SWITCH,
     COMMAND_MODE,
     COMMAND_POWER_OFF,
     COMMAND_POWER_ON,
@@ -114,6 +117,12 @@ class LinkingTempHub:
         options = entry.options
         self.allow_control = bool(
             options.get(CONF_ALLOW_CONTROL, DEFAULT_ALLOW_CONTROL)
+        )
+        self.enable_experimental_energy_control = bool(
+            options.get(
+                CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
+                DEFAULT_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
+            )
         )
         self.command_min_interval = float(
             options.get(CONF_COMMAND_MIN_INTERVAL, DEFAULT_COMMAND_MIN_INTERVAL)
@@ -338,6 +347,21 @@ class LinkingTempHub:
             1 if enabled else 0,
             coalesce=True,
             send_guard=self._winter_humidifier_dispatch_block_reason,
+        )
+
+    async def async_set_energy_saving(self, enabled: bool) -> None:
+        """Set the experimental energy-saving flag and await push confirmation."""
+        if not self.enable_experimental_energy_control:
+            self.health.increment("commands_blocked")
+            raise HomeAssistantError("实验性节能控制尚未启用")
+        await self._async_send_tracked(
+            "system",
+            "节能控制",
+            {"energy_saving": "ON" if enabled else "OFF"},
+            self.tech_system_mac,
+            COMMAND_ENERGY_SWITCH,
+            1 if enabled else 0,
+            coalesce=True,
         )
 
     async def async_set_thermostat_power(self, mac_hex: str, enabled: bool) -> None:
@@ -1073,6 +1097,7 @@ class LinkingTempHub:
                     "mode": self.state.mode,
                     "scene": self.state.scene,
                     "winter_humidifier": self.state.winter_humidifier,
+                    "energy_saving": self.state.energy_saving,
                 },
             )
         thermostat = decode_thermostat_status(body, self.tech_system_mac)

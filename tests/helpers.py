@@ -71,24 +71,21 @@ class FakeMC7021Server:
 
     async def async_stop(self) -> None:
         """Close the connection and stop the local TCP listener."""
-        await self.async_close_client()
         if self._server is not None:
             server = self._server
+            self._server = None
             server.close()
-            client_tasks = tuple(self._client_tasks)
-            for task in client_tasks:
-                task.cancel()
-            if client_tasks:
-                await asyncio.gather(*client_tasks, return_exceptions=True)
             try:
                 await asyncio.wait_for(server.wait_closed(), CLIENT_CLOSE_TIMEOUT)
             except asyncio.TimeoutError:
-                # Python 3.12 can keep Server.wait_closed() blocked after an
-                # accepted transport has been cancelled by a HA entry unload.
-                # The handler tasks above are already awaited, so this is only
-                # the interpreter's server bookkeeping and is safe to bound.
                 pass
-            self._server = None
+        # Stop accepting before dropping the client. Otherwise the integration
+        # can reconnect while asyncio is tearing down the listening sockets.
+        await self.async_close_client()
+        if server_tasks := tuple(self._client_tasks):
+            for task in server_tasks:
+                task.cancel()
+            await asyncio.gather(*server_tasks, return_exceptions=True)
 
     async def async_send_status(self, body: bytes) -> None:
         """Send a valid MC7021 status frame to the connected client."""

@@ -20,6 +20,7 @@ from .const import (
     CONF_COMMAND_CONFIRMATION_TIMEOUT,
     CONF_COMMAND_MIN_INTERVAL,
     CONF_CONTROLLER_SILENCE_TIMEOUT,
+    CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
     CONF_TECH_SYSTEM_MAC,
     CONF_THERMOSTAT_OFFLINE_AFTER,
     DEFAULT_ALLOW_CONTROL,
@@ -27,6 +28,7 @@ from .const import (
     DEFAULT_COMMAND_CONFIRMATION_TIMEOUT,
     DEFAULT_COMMAND_MIN_INTERVAL,
     DEFAULT_CONTROLLER_SILENCE_TIMEOUT,
+    DEFAULT_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
     DEFAULT_PORT,
     DEFAULT_TECH_SYSTEM_MAC,
     DEFAULT_THERMOSTAT_OFFLINE_AFTER,
@@ -319,6 +321,13 @@ class LinkingOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_ALLOW_CONTROL,
                     default=options.get(CONF_ALLOW_CONTROL, DEFAULT_ALLOW_CONTROL),
+                ): bool,
+                vol.Required(
+                    CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
+                    default=options.get(
+                        CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
+                        DEFAULT_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
+                    ),
                 ): bool,
                 vol.Required(
                     CONF_COMMAND_MIN_INTERVAL,

@@ -56,10 +56,14 @@
         "title": "Runtime and safety settings",
         "data": {
           "allow_control": "Allow controls from Home Assistant",
+          "enable_experimental_energy_control": "Enable experimental energy-saving control",
           "command_min_interval": "Minimum command interval (seconds)",
           "command_confirmation_timeout": "Command confirmation timeout (seconds)",
           "controller_silence_timeout": "Controller silence timeout (seconds)",
           "thermostat_offline_after": "Panel offline timeout (seconds; 0 disables)"
+        },
+        "data_description": {
+          "enable_experimental_energy_control": "Disabled by default. Enabling registers the energy-saving control entity; global control permission and on-site state-return validation are still required for this controller and firmware."
         }
       }
     }
@@ -170,8 +174,8 @@
       "panel_count": {"name": "Discovered panel count"},
       "automation_temperature": {"name": "Automation temperature"},
       "automation_humidity": {"name": "Automation humidity"},
-      "system_temperature": {"name": "Controller temperature"},
-      "system_humidity": {"name": "Controller humidity"},
+      "system_temperature": {"name": "Temperature"},
+      "system_humidity": {"name": "Humidity"},
       "system_pm25": {"name": "PM2.5"},
       "system_co2": {"name": "CO₂"},
       "system_fault_code": {"name": "System fault raw code"},
@@ -179,7 +183,8 @@
     },
     "switch": {
       "system_power": {"name": "System power"},
-      "winter_humidifier": {"name": "Winter humidifier"}
+      "winter_humidifier": {"name": "Winter humidifier"},
+      "energy_control": {"name": "Energy-saving control"}
     }
   }
 }

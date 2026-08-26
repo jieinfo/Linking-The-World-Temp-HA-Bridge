@@ -10,6 +10,9 @@ NAME: Final = "Linking The World Temp HA"
 CONF_CLIENT_ID: Final = "client_id"
 CONF_TECH_SYSTEM_MAC: Final = "tech_system_mac"
 CONF_ALLOW_CONTROL: Final = "allow_control"
+CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL: Final = (
+    "enable_experimental_energy_control"
+)
 CONF_COMMAND_MIN_INTERVAL: Final = "command_min_interval"
 CONF_COMMAND_CONFIRMATION_TIMEOUT: Final = "command_confirmation_timeout"
 CONF_CONTROLLER_SILENCE_TIMEOUT: Final = "controller_silence_timeout"
@@ -20,6 +23,7 @@ DEFAULT_USERNAME: Final = "admin"
 DEFAULT_CLIENT_ID: Final = "ff9549d5891998e5"
 DEFAULT_TECH_SYSTEM_MAC: Final = "ff00ffffffff00ff"
 DEFAULT_ALLOW_CONTROL: Final = True
+DEFAULT_ENABLE_EXPERIMENTAL_ENERGY_CONTROL: Final = False
 DEFAULT_COMMAND_MIN_INTERVAL: Final = 0.5
 DEFAULT_COMMAND_CONFIRMATION_TIMEOUT: Final = 8.0
 DEFAULT_CONTROLLER_SILENCE_TIMEOUT: Final = 300.0
