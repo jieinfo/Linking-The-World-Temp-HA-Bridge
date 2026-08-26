@@ -3,10 +3,10 @@
   "name": "Linking The World Temp HA",
   "codeowners": ["@jieinfo"],
   "config_flow": true,
-  "documentation": "https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge",
+  "documentation": "https://github.com/jieinfo/Linking-The-World-Temp-HA-Integration",
   "integration_type": "hub",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/jieinfo/Linking-The-World-Temp-HA-Bridge/issues",
+  "issue_tracker": "https://github.com/jieinfo/Linking-The-World-Temp-HA-Integration/issues",
   "requirements": [],
-  "version": "1.2.4"
+  "version": "1.2.5"
 }
