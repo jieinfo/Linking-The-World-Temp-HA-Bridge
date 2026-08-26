@@ -269,20 +269,29 @@ def parse_tlvs(data: bytes) -> dict[int, bytes]:
     return dict(iter_tlvs(data))
 
 
-def decode_tech_system_status(body: bytes, tech_system_mac: bytes) -> dict[str, str]:
+def decode_tech_system_status(
+    body: bytes, tech_system_mac: bytes
+) -> dict[str, str | float | int]:
     fields = parse_tlvs(body)
-    if fields.get(0x0004) != tech_system_mac:
+    packed = fields.get(0x000A)
+    if fields.get(0x0004) != tech_system_mac or len(packed or b"") != 14:
         return {}
-    state: dict[str, str] = {}
+    assert packed is not None
+    state: dict[str, str | float | int] = {}
     if power := fields.get(0x000B):
         state["power"] = "ON" if power[0] else "OFF"
-    if packed := fields.get(0x000A):
-        if mode := MODE_NAMES.get(packed[0]):
-            state["mode"] = mode
-        if len(packed) > 1 and (scene := SCENE_NAMES.get(packed[1])):
-            state["scene"] = scene
-        if len(packed) > 2:
-            state["winter_humidifier"] = "ON" if packed[2] else "OFF"
+    if mode := MODE_NAMES.get(packed[0]):
+        state["mode"] = mode
+    if scene := SCENE_NAMES.get(packed[1]):
+        state["scene"] = scene
+    state["winter_humidifier"] = "ON" if packed[2] else "OFF"
+    state["energy_saving"] = "ON" if packed[3] else "OFF"
+    state["temperature"] = int.from_bytes(packed[4:6], "little") / 10
+    state["humidity"] = int.from_bytes(packed[6:8], "little")
+    state["pm25"] = int.from_bytes(packed[8:10], "little") / 10
+    state["co2"] = int.from_bytes(packed[10:12], "little")
+    state["system_fault_code"] = packed[12]
+    state["filter_fault_code"] = packed[13]
     return state
 
 

@@ -81,7 +81,10 @@ class StatusTests(unittest.TestCase):
         mac = bytes.fromhex("ff00ffffffff00ff")
         body = protocol.tlv(0x0004, mac)
         body += protocol.tlv(0x000B, b"\x01")
-        body += protocol.tlv(0x000A, bytes((1, 1, 0)))
+        body += protocol.tlv(
+            0x000A,
+            bytes.fromhex("0101000149013e003200f0010000"),
+        )
         self.assertEqual(
             protocol.decode_tech_system_status(body, mac),
             {
@@ -89,6 +92,48 @@ class StatusTests(unittest.TestCase):
                 "mode": "cool",
                 "scene": "home",
                 "winter_humidifier": "OFF",
+                "energy_saving": "ON",
+                "temperature": 32.9,
+                "humidity": 62,
+                "pm25": 5.0,
+                "co2": 496,
+                "system_fault_code": 0,
+                "filter_fault_code": 0,
+            },
+        )
+
+    def test_total_control_rejects_non_14_byte_status_blocks(self) -> None:
+        mac = bytes.fromhex("ff00ffffffff00ff")
+        prefix = protocol.tlv(0x0004, mac) + protocol.tlv(0x000B, b"\x01")
+
+        for packed in (b"\x01\x01\x00", bytes(15)):
+            with self.subTest(length=len(packed)):
+                self.assertEqual(
+                    protocol.decode_tech_system_status(
+                        prefix + protocol.tlv(0x000A, packed), mac
+                    ),
+                    {},
+                )
+
+    def test_unknown_total_control_enums_do_not_hide_measured_values(self) -> None:
+        mac = bytes.fromhex("ff00ffffffff00ff")
+        packed = bytes.fromhex("7f7e0201fa0041007b00bc022a07")
+        body = protocol.tlv(0x0004, mac)
+        body += protocol.tlv(0x000B, b"\x00")
+        body += protocol.tlv(0x000A, packed)
+
+        self.assertEqual(
+            protocol.decode_tech_system_status(body, mac),
+            {
+                "power": "OFF",
+                "winter_humidifier": "ON",
+                "energy_saving": "ON",
+                "temperature": 25.0,
+                "humidity": 65,
+                "pm25": 12.3,
+                "co2": 700,
+                "system_fault_code": 42,
+                "filter_fault_code": 7,
             },
         )
 
@@ -230,6 +275,13 @@ class OfficialPanelCaptureRegressionTests(unittest.TestCase):
                     self.assertEqual(fields[0x0009][0], fixture["command"])
                     self.assertEqual(
                         fields.get(0x000A, b"").hex(), fixture.get("value_hex", "")
+                    )
+                elif "tech_system_state" in fixture:
+                    self.assertEqual(
+                        protocol.decode_tech_system_status(
+                            frame.body, bytes.fromhex(fixtures["tech_system_mac"])
+                        ),
+                        fixture["tech_system_state"],
                     )
                 else:
                     state = protocol.decode_thermostat_status(
