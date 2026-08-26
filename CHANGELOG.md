@@ -1,5 +1,12 @@
 # Linking The World Temp HA changelog
 
+## 1.2.1 - Home Assistant unit compatibility
+
+- 将 PM2.5 与 CO2 实体的浓度单位迁移到 Home Assistant 2026.7 引入的
+  `UnitOfDensity` 与 `UnitOfRatio` 枚举，消除将在 HA Core 2027.8 移除的旧常量警告；
+  实体 ID、设备类别、单位值及历史统计保持不变。
+- 增加仓库级防回归检查，禁止再次引入这两个已弃用的浓度单位常量。
+
 ## 1.2.0 - Opt-in experimental energy-saving control
 
 - 新增默认关闭的“启用实验性节能控制”选项；只有用户显式启用后，科技系统总控设备才会

@@ -13,10 +13,10 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-    CONCENTRATION_PARTS_PER_MILLION,
     PERCENTAGE,
     EntityCategory,
+    UnitOfDensity,
+    UnitOfRatio,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
@@ -93,7 +93,7 @@ SYSTEM_STATUS_SENSORS = (
         "system_pm25",
         lambda hub: hub.state.pm25,
         SensorDeviceClass.PM25,
-        CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         SensorStateClass.MEASUREMENT,
     ),
     SystemStatusDescription(
@@ -101,7 +101,7 @@ SYSTEM_STATUS_SENSORS = (
         "system_co2",
         lambda hub: hub.state.co2,
         SensorDeviceClass.CO2,
-        CONCENTRATION_PARTS_PER_MILLION,
+        UnitOfRatio.PARTS_PER_MILLION,
         SensorStateClass.MEASUREMENT,
     ),
     SystemStatusDescription(
