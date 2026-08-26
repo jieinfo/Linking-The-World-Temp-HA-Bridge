@@ -5,8 +5,10 @@ from __future__ import annotations
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import DOMAIN
 from .entity import LinkingTempEntity
 from .hub import LinkingTempHub
 
@@ -86,4 +88,11 @@ async def async_setup_entry(
     entities = [SystemPowerSwitch(hub), WinterHumidifierSwitch(hub)]
     if hub.enable_experimental_energy_control:
         entities.append(EnergyControlSwitch(hub))
+    else:
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id(
+            "switch", DOMAIN, f"{entry.entry_id}_energy_control"
+        )
+        if entity_id is not None:
+            registry.async_remove(entity_id)
     async_add_entities(entities)
