@@ -69,6 +69,26 @@ class DecoderTests(unittest.TestCase):
 
 
 class StatusTests(unittest.TestCase):
+    def test_total_control_state_has_unknown_defaults_for_full_status_block(self) -> None:
+        state = protocol.TechSystemState()
+
+        self.assertEqual(
+            vars(state),
+            {
+                "power": None,
+                "mode": None,
+                "scene": None,
+                "winter_humidifier": None,
+                "energy_saving": None,
+                "temperature": None,
+                "humidity": None,
+                "pm25": None,
+                "co2": None,
+                "system_fault_code": None,
+                "filter_fault_code": None,
+            },
+        )
+
     def test_truncated_status_tlv_is_rejected_without_partial_decoding(self) -> None:
         mac = bytes.fromhex("ff00ffffffff00ff")
         body = protocol.tlv(0x0004, mac) + protocol.tlv(0x000B, b"\x01")
