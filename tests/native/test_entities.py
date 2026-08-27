@@ -173,6 +173,54 @@ async def test_thermostat_power_service_skips_an_already_applied_state(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
+async def test_room_panel_can_turn_on_while_system_power_remains_off(
+    hass, setup_integration, fake_controller
+):
+    """A room panel is independently switchable after the total system stops."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_system_status(hub, power=False, mode=1))
+    await fake_controller.async_send_status(
+        _thermostat_status(hub, mac_hex, power=False)
+    )
+    await _wait_for(lambda: hub.available and mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    commands: list[tuple[bytes | None, int]] = []
+
+    async def acknowledge_panel_power_on(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        command = fields.get(0x0009, b"\x00")[0]
+        commands.append((fields.get(0x0004), command))
+        if fields.get(0x0004) == bytes.fromhex(mac_hex) and command == 2:
+            await fake_controller.async_send_status(
+                _thermostat_status(hub, mac_hex, power=True)
+            )
+
+    fake_controller.on_command = acknowledge_panel_power_on
+    climate_entity = _entity_id(
+        hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
+    )
+    state = hass.states.get(climate_entity)
+    assert state is not None
+    assert state.attributes["hvac_modes"] == ["off", "cool"]
+
+    await hass.services.async_call(
+        climate.DOMAIN,
+        climate.SERVICE_SET_HVAC_MODE,
+        {"entity_id": climate_entity, "hvac_mode": "cool"},
+        blocking=True,
+    )
+
+    await _wait_for(lambda: hub.thermostats[mac_hex].power == "ON")
+    assert hub.state.power == "OFF"
+    assert commands == [(bytes.fromhex(mac_hex), 2)]
+    state = hass.states.get(climate_entity)
+    assert state is not None
+    assert state.state == "cool"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_opposite_thermostat_power_request_is_applied_after_pending_ack(
     hass, setup_integration, fake_controller
 ):
