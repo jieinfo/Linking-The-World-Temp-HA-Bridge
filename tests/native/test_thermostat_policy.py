@@ -86,19 +86,19 @@ class ThermostatPolicyTests(unittest.TestCase):
         self.assertFalse(policy.can_operate_room_thermostat("ON", "ventilation"))
         self.assertFalse(policy.can_operate_room_thermostat("ON", "dehumidify"))
 
-    def test_total_power_off_always_blocks_room_panels(self) -> None:
+    def test_total_power_off_keeps_room_panels_operable_in_temperature_modes(
+        self,
+    ) -> None:
         policy = load_policy()
 
-        self.assertFalse(policy.can_operate_room_thermostat("OFF", "cool"))
+        self.assertTrue(policy.can_operate_room_thermostat("OFF", "cool"))
+        self.assertTrue(policy.can_operate_room_thermostat("OFF", "heat"))
         self.assertFalse(policy.can_operate_room_thermostat(None, "heat"))
 
     def test_block_reason_is_clear_for_home_assistant_users(self) -> None:
         policy = load_policy()
 
-        self.assertEqual(
-            policy.room_thermostat_block_reason("OFF", "cool"),
-            "请先开启科技系统总开关",
-        )
+        self.assertIsNone(policy.room_thermostat_block_reason("OFF", "cool"))
         self.assertEqual(
             policy.room_thermostat_block_reason("ON", "ventilation"),
             "当前为通风模式，房间温控面板由科技系统总控强制关闭",

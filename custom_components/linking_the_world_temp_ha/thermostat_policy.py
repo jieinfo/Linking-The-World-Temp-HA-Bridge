@@ -9,15 +9,18 @@ def can_operate_room_thermostat(
     system_power: str | None, system_mode: str | None
 ) -> bool:
     """Return whether the original controller allows room panels to run."""
-    return system_power == "ON" and system_mode in ROOM_THERMOSTAT_ACTIVE_MODES
+    return (
+        system_power in ("ON", "OFF")
+        and system_mode in ROOM_THERMOSTAT_ACTIVE_MODES
+    )
 
 
 def room_thermostat_block_reason(
     system_power: str | None, system_mode: str | None
 ) -> str | None:
     """Return a user-facing reason when a room panel cannot be enabled."""
-    if system_power != "ON":
-        return "请先开启科技系统总开关"
+    if system_power not in ("ON", "OFF"):
+        return "科技系统总开关状态尚未确认"
     if system_mode == "ventilation":
         return "当前为通风模式，房间温控面板由科技系统总控强制关闭"
     if system_mode == "dehumidify":

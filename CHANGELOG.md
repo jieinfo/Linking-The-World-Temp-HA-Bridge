@@ -1,5 +1,14 @@
 # Linking The World Temp HA changelog
 
+## 1.2.6 - Independent room panel control while the system is off
+
+- 对齐原版 App：科技系统总控关闭并保留制冷或制热模式时，房间 Climate 实体继续提供对应
+  的开启选项；开启房间面板只发送该面板命令，不会联动开启科技系统总控。
+- 总控关闭命令尚未确认时继续阻止房间面板开启，避免并发命令被主机的批量关闭动作覆盖；
+  确认关闭后即可独立操作房间面板。
+- 通风、除湿以及总控状态尚未确认时仍维持房间面板关闭保护。增加策略测试和真实 Home
+  Assistant Climate 服务回归测试。
+
 ## 1.2.5 - Repository identity and documentation refresh
 
 - GitHub 仓库更名为 `Linking-The-World-Temp-HA-Integration`，并同步更新 HACS 安装地址、
