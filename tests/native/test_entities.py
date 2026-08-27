@@ -201,7 +201,8 @@ async def test_room_panel_can_turn_on_while_system_power_remains_off(
     climate_entity = _entity_id(
         hass, hub.entry.entry_id, "climate", f"thermostat_{mac_hex}_climate"
     )
-    state = hass.states[climate_entity]
+    state = hass.states.get(climate_entity)
+    assert state is not None
     assert state.attributes["hvac_modes"] == ["off", "cool"]
 
     await hass.services.async_call(
@@ -214,7 +215,9 @@ async def test_room_panel_can_turn_on_while_system_power_remains_off(
     await _wait_for(lambda: hub.thermostats[mac_hex].power == "ON")
     assert hub.state.power == "OFF"
     assert commands == [(bytes.fromhex(mac_hex), 2)]
-    assert hass.states[climate_entity].state == "cool"
+    state = hass.states.get(climate_entity)
+    assert state is not None
+    assert state.state == "cool"
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
