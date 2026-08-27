@@ -90,9 +90,6 @@ async def async_get_config_entry_diagnostics(
         "configuration": {
             "port": hub.port,
             "allow_control": hub.allow_control,
-            "enable_experimental_energy_control": (
-                hub.enable_experimental_energy_control
-            ),
             "command_min_interval": hub.command_min_interval,
             "command_confirmation_timeout": hub.command_confirmation_timeout,
             "controller_silence_timeout": hub.controller_silence_timeout,

@@ -183,3 +183,19 @@ class RepositorySurfaceTests(unittest.TestCase):
         self.assertIn("UnitOfRatio.PARTS_PER_MILLION", sensor_source)
         self.assertNotIn("CONCENTRATION_MICROGRAMS_PER_CUBIC_METER", sensor_source)
         self.assertNotIn("CONCENTRATION_PARTS_PER_MILLION", sensor_source)
+
+    def test_energy_control_is_a_single_non_experimental_entity(self) -> None:
+        """Energy saving must be one permanent switch without a duplicate sensor."""
+        component = ROOT / "custom_components/linking_the_world_temp_ha"
+        combined_source = "\n".join(
+            path.read_text(encoding="utf-8") for path in component.glob("*.py")
+        )
+        strings = json.loads((component / "strings.json").read_text(encoding="utf-8"))
+
+        self.assertNotIn("CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL", combined_source)
+        self.assertNotIn("EnergySavingSensor", combined_source)
+        self.assertNotIn("energy_saving", strings["entity"]["binary_sensor"])
+        self.assertEqual(
+            strings["entity"]["switch"]["energy_control"]["name"],
+            "节能控制",
+        )

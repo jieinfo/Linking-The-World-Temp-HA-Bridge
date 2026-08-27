@@ -56,14 +56,10 @@
         "title": "运行与安全设置",
         "data": {
           "allow_control": "允许从 HA 控制设备",
-          "enable_experimental_energy_control": "启用实验性节能控制",
           "command_min_interval": "控制命令最小间隔（秒）",
           "command_confirmation_timeout": "命令确认超时（秒）",
           "controller_silence_timeout": "主机静默重连时间（秒）",
           "thermostat_offline_after": "面板无上报离线时间（秒，0 表示关闭）"
-        },
-        "data_description": {
-          "enable_experimental_energy_control": "默认关闭。启用后注册节能控制实体；仍需开启总控制权限，并在当前主机和固件上现场验证状态回传。"
         }
       }
     }
@@ -128,8 +124,7 @@
   "entity": {
     "binary_sensor": {
       "controller_connection": {"name": "主机连接"},
-      "protocol_verified": {"name": "协议兼容"},
-      "energy_saving": {"name": "节能状态"}
+      "protocol_verified": {"name": "协议兼容"}
     },
     "climate": {"room_thermostat": {"name": "温控"}},
     "select": {

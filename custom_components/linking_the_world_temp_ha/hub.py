@@ -30,7 +30,6 @@ from .const import (
     CONF_COMMAND_CONFIRMATION_TIMEOUT,
     CONF_COMMAND_MIN_INTERVAL,
     CONF_CONTROLLER_SILENCE_TIMEOUT,
-    CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
     CONF_TECH_SYSTEM_MAC,
     CONF_THERMOSTAT_OFFLINE_AFTER,
     DEFAULT_ALLOW_CONTROL,
@@ -38,7 +37,6 @@ from .const import (
     DEFAULT_COMMAND_CONFIRMATION_TIMEOUT,
     DEFAULT_COMMAND_MIN_INTERVAL,
     DEFAULT_CONTROLLER_SILENCE_TIMEOUT,
-    DEFAULT_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
     DEFAULT_TECH_SYSTEM_MAC,
     DEFAULT_THERMOSTAT_OFFLINE_AFTER,
     DOMAIN,
@@ -117,12 +115,6 @@ class LinkingTempHub:
         options = entry.options
         self.allow_control = bool(
             options.get(CONF_ALLOW_CONTROL, DEFAULT_ALLOW_CONTROL)
-        )
-        self.enable_experimental_energy_control = bool(
-            options.get(
-                CONF_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
-                DEFAULT_ENABLE_EXPERIMENTAL_ENERGY_CONTROL,
-            )
         )
         self.command_min_interval = float(
             options.get(CONF_COMMAND_MIN_INTERVAL, DEFAULT_COMMAND_MIN_INTERVAL)
@@ -350,10 +342,7 @@ class LinkingTempHub:
         )
 
     async def async_set_energy_saving(self, enabled: bool) -> None:
-        """Set the experimental energy-saving flag and await push confirmation."""
-        if not self.enable_experimental_energy_control:
-            self.health.increment("commands_blocked")
-            raise HomeAssistantError("实验性节能控制尚未启用")
+        """Set the energy-saving flag and await controller confirmation."""
         await self._async_send_tracked(
             "system",
             "节能控制",

@@ -1,5 +1,15 @@
 # Linking The World Temp HA changelog
 
+## 1.2.7 - Permanent energy-saving control
+
+- 将“节能控制”从实验性可选实体升级为科技系统总控的常驻开关，移除“启用实验性节能控制”
+  选项及运行时守卫；开关继续受全局“允许从 HA 控制设备”保护。
+- 删除与开关重复展示同一主机状态的只读“节能状态”二进制传感器；保留协议解析、命令确认
+  和脱敏诊断中的内部节能状态。
+- 升级配置条目时自动清理旧“节能状态”实体和遗留实验选项，避免 unavailable 实体或无效
+  配置残留；依赖旧二进制传感器的自动化需改用“节能控制”。增加配置迁移、实体注册、
+  选项表单和节能回报测试。
+
 ## 1.2.6 - Independent room panel control while the system is off
 
 - 对齐原版 App：科技系统总控关闭并保留制冷或制热模式时，房间 Climate 实体继续提供对应
