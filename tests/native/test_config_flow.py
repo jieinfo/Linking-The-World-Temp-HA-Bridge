@@ -365,14 +365,13 @@ async def test_options_flow_validates_runtime_safety_ranges(hass, mock_config_en
     assert result["type"] == "form"
     assert result["step_id"] == "init"
     option_names = {str(marker) for marker in result["data_schema"].schema}
-    assert "enable_experimental_energy_control" in option_names
+    assert "enable_experimental_energy_control" not in option_names
 
     with pytest.raises(Exception):
         await hass.config_entries.options.async_configure(
             result["flow_id"],
             user_input={
                 "allow_control": True,
-                "enable_experimental_energy_control": False,
                 "command_min_interval": 0,
                 "command_confirmation_timeout": 0.5,
                 "controller_silence_timeout": 30,
@@ -384,7 +383,6 @@ async def test_options_flow_validates_runtime_safety_ranges(hass, mock_config_en
         result["flow_id"],
         user_input={
             "allow_control": False,
-            "enable_experimental_energy_control": True,
             "command_min_interval": 1,
             "command_confirmation_timeout": 3,
             "controller_silence_timeout": 60,
@@ -393,7 +391,7 @@ async def test_options_flow_validates_runtime_safety_ranges(hass, mock_config_en
     )
     assert result["type"] == "create_entry"
     assert result["data"]["allow_control"] is False
-    assert result["data"]["enable_experimental_energy_control"] is True
+    assert "enable_experimental_energy_control" not in result["data"]
 
 
 async def test_user_flow_labels_invalid_and_unexpected_input_without_tracebacks(

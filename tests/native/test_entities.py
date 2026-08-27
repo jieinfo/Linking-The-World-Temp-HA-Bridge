@@ -638,7 +638,7 @@ async def test_full_system_status_exposes_read_only_environment_and_fault_entiti
     await hass.async_block_till_done()
 
     expected_states = {
-        ("binary_sensor", "energy_saving"): "on",
+        ("switch", "energy_control"): "on",
         ("sensor", "system_temperature"): "25.4",
         ("sensor", "system_humidity"): "65",
         ("sensor", "system_pm25"): "12.3",
@@ -678,44 +678,18 @@ async def test_full_system_status_exposes_read_only_environment_and_fault_entiti
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
-async def test_energy_control_entity_requires_explicit_experimental_opt_in(
+async def test_energy_control_entity_is_always_registered(
     hass, setup_integration
 ) -> None:
-    """The writable energy switch stays absent until the user opts in."""
+    """The writable energy switch is a permanent total-controller entity."""
     hub = setup_integration.hub
     added = []
 
-    hub.enable_experimental_energy_control = False
     await async_setup_switches(hass, hub.entry, added.extend)
-    assert all(entity._attr_unique_id != f"{hub.entry.entry_id}_energy_control" for entity in added)
-
-    added.clear()
-    hub.enable_experimental_energy_control = True
-    await async_setup_switches(hass, hub.entry, added.extend)
-    assert any(entity._attr_unique_id == f"{hub.entry.entry_id}_energy_control" for entity in added)
-
-
-@pytest.mark.usefixtures("enable_custom_integrations")
-async def test_disabling_energy_control_removes_its_registry_entry(
-    hass, setup_integration
-) -> None:
-    """An opt-out removes the previously registered experimental entity."""
-    hub = setup_integration.hub
-    registry = er.async_get(hass)
-    unique_id = f"{hub.entry.entry_id}_energy_control"
-    registered = registry.async_get_or_create(
-        "switch",
-        DOMAIN,
-        unique_id,
-        config_entry=hub.entry,
-        original_name="节能控制",
+    assert any(
+        entity._attr_unique_id == f"{hub.entry.entry_id}_energy_control"
+        for entity in added
     )
-    assert registry.async_get(registered.entity_id) is not None
-
-    hub.enable_experimental_energy_control = False
-    await async_setup_switches(hass, hub.entry, lambda entities: None)
-
-    assert registry.async_get_entity_id("switch", DOMAIN, unique_id) is None
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -724,7 +698,6 @@ async def test_energy_control_uses_command_06_and_controller_push_confirmation(
 ) -> None:
     """Energy control is confirmed only by the matching full status report."""
     hub = setup_integration.hub
-    hub.enable_experimental_energy_control = True
     await fake_controller.async_send_status(
         _system_status(hub, power=False, energy_saving=False)
     )
@@ -757,7 +730,6 @@ async def test_energy_control_confirmation_is_independent_of_mode_and_scene(
 ) -> None:
     """All verified mode/scene combinations preserve command 0x06 semantics."""
     hub = setup_integration.hub
-    hub.enable_experimental_energy_control = True
     hub.command_min_interval = 0
     controller = {"mode": 1, "scene": 0, "energy_saving": False}
     commands: list[tuple[int, int]] = []

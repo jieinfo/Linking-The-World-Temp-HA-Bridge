@@ -5,10 +5,8 @@ from __future__ import annotations
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
 from .entity import LinkingTempEntity
 from .hub import LinkingTempHub
 
@@ -56,7 +54,7 @@ class WinterHumidifierSwitch(LinkingTempEntity, SwitchEntity):
 
 
 class EnergyControlSwitch(LinkingTempEntity, SwitchEntity):
-    """Opt-in writable control for the controller-reported energy state."""
+    """Writable control backed by the controller-reported energy state."""
 
     _attr_translation_key = "energy_control"
     _attr_icon = "mdi:leaf"
@@ -85,14 +83,10 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     hub: LinkingTempHub = entry.runtime_data.hub
-    entities = [SystemPowerSwitch(hub), WinterHumidifierSwitch(hub)]
-    if hub.enable_experimental_energy_control:
-        entities.append(EnergyControlSwitch(hub))
-    else:
-        registry = er.async_get(hass)
-        entity_id = registry.async_get_entity_id(
-            "switch", DOMAIN, f"{entry.entry_id}_energy_control"
-        )
-        if entity_id is not None:
-            registry.async_remove(entity_id)
-    async_add_entities(entities)
+    async_add_entities(
+        [
+            SystemPowerSwitch(hub),
+            WinterHumidifierSwitch(hub),
+            EnergyControlSwitch(hub),
+        ]
+    )

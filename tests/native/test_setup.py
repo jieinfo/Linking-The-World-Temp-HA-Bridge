@@ -101,6 +101,37 @@ async def test_setup_uses_real_home_assistant(
     assert mock_config_entry.state is ConfigEntryState.LOADED
 
 
+async def test_setup_removes_legacy_energy_sensor_and_experimental_option(
+    hass, mock_config_entry, fake_controller
+):
+    """Upgrading leaves one permanent energy switch and no retired artifacts."""
+    mock_config_entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    legacy_unique_id = f"{mock_config_entry.entry_id}_energy_saving"
+    legacy = registry.async_get_or_create(
+        "binary_sensor",
+        DOMAIN,
+        legacy_unique_id,
+        config_entry=mock_config_entry,
+        original_name="节能状态",
+    )
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            **mock_config_entry.options,
+            "enable_experimental_energy_control": True,
+        },
+    )
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert registry.async_get(legacy.entity_id) is None
+    assert "enable_experimental_energy_control" not in mock_config_entry.options
+    assert registry.async_get_entity_id(
+        "switch", DOMAIN, f"{mock_config_entry.entry_id}_energy_control"
+    ) is not None
+
+
 async def test_setup_uses_typed_runtime_data_and_never_stores_hub_in_hass_data(
     hass, mock_config_entry, fake_controller
 ):
