@@ -278,6 +278,9 @@ async def test_setup_stops_hub_when_runtime_assignment_fails(hass, monkeypatch):
             self.stopped = True
 
     class RuntimeDataFailureEntry:
+        entry_id = "runtime-data-failure"
+        options: dict[str, object] = {}
+
         @property
         def runtime_data(self):
             return None
