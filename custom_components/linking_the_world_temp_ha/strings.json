@@ -168,7 +168,6 @@
           "waiting": "等待主机确认",
           "queued": "已排队",
           "confirmed": "已确认",
-          "rejected": "主机未接受当前操作",
           "retrying": "正在重试",
           "timeout": "确认超时",
           "timeout_continuing": "超时，继续执行最新命令",
