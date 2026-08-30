@@ -73,19 +73,6 @@ def temperature_retry_is_allowed(pending: PendingCommand) -> bool:
     )
 
 
-def controller_rejected_command(
-    pending: PendingCommand, actual: dict[str, str | None]
-) -> bool:
-    """Recognize a valid controller refusal instead of waiting for a timeout."""
-    return (
-        pending.target == "system"
-        and pending.expected == {"winter_humidifier": "ON"}
-        and pending.value == 1
-        and actual.get("mode") not in (None, "heat")
-        and actual.get("winter_humidifier") == "OFF"
-    )
-
-
 def first_status_poll_at(sent_at: float, confirmation_timeout: float) -> float:
     """Leave time for a controller push before falling back to a status query."""
     return sent_at + min(PUSH_CONFIRMATION_GRACE, confirmation_timeout / 2)
