@@ -565,7 +565,7 @@ async def test_system_mode_scene_and_humidifier_follow_controller_push_state(
     humidifier_entity = _entity_id(
         hass, hub.entry.entry_id, "switch", "winter_humidifier"
     )
-    assert hass.states.get(humidifier_entity).state == "unavailable"
+    assert hass.states.get(humidifier_entity).state == "off"
 
     await hass.services.async_call(
         select.DOMAIN,
@@ -613,6 +613,53 @@ async def test_system_mode_scene_and_humidifier_follow_controller_push_state(
         blocking=True,
     )
     await _wait_for(lambda: hub.state.power == "OFF")
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_humidifier_controller_rejection_outside_heat_is_not_a_timeout(
+    hass, setup_integration, fake_controller
+):
+    """A non-heating controller OFF reply terminates an attempted enable."""
+    hub = setup_integration.hub
+    sent_values: list[int] = []
+
+    async def reject_enable(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) != hub.tech_system_mac:
+            return
+        command = fields.get(0x0009, b"\x00")[0]
+        value = fields.get(0x000A, b"\x00")[0]
+        if command != 5:
+            return
+        sent_values.append(value)
+        await fake_controller.async_send_status(
+            _system_status(hub, power=True, mode=1, humidifier=False)
+        )
+
+    fake_controller.on_command = reject_enable
+    await fake_controller.async_send_status(
+        _system_status(hub, power=True, mode=1, humidifier=False)
+    )
+    await _wait_for(lambda: hub.available)
+
+    entity_id = _entity_id(
+        hass, hub.entry.entry_id, "switch", "winter_humidifier"
+    )
+    assert hass.states.get(entity_id).state == "off"
+
+    await hass.services.async_call(
+        switch.DOMAIN,
+        switch.SERVICE_TURN_ON,
+        {"entity_id": entity_id},
+        blocking=True,
+    )
+    await _wait_for(lambda: "system" not in hub._pending, timeout=1)
+    await hass.async_block_till_done()
+
+    assert sent_values == [1]
+    assert hass.states.get(entity_id).state == "off"
+    assert hub.last_command_status == "rejected:冬季加湿"
+    assert hub.health.snapshot()["counters"]["commands_timed_out"] == 0
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
@@ -1112,8 +1159,6 @@ async def test_control_guards_reject_invalid_or_unsafe_operations(
         await hub.async_set_mode("heat")
     with pytest.raises(HomeAssistantError, match="不支持的场景"):
         await hub.async_set_scene("party")
-    with pytest.raises(HomeAssistantError, match="冬季加湿"):
-        await hub.async_set_winter_humidifier(True)
     with pytest.raises(HomeAssistantError, match="整数"):
         await hub.async_set_thermostat_temperature(mac_hex, 22.5)
     with pytest.raises(HomeAssistantError, match="整数"):
