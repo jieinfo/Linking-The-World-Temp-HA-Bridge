@@ -167,6 +167,7 @@
           "waiting": "Waiting for controller confirmation",
           "queued": "Queued",
           "confirmed": "Confirmed",
+          "rejected": "Controller did not accept the operation",
           "retrying": "Retrying",
           "timeout": "Confirmation timed out",
           "timeout_continuing": "Timed out, continuing latest command",
