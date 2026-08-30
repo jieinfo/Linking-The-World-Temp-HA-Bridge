@@ -30,6 +30,7 @@ _COUNTER_NAMES = (
     "commands_confirmed",
     "commands_confirmed_by_push",
     "commands_confirmed_after_query",
+    "commands_rejected",
     "status_fallback_queries",
     "commands_retried",
     "commands_coalesced",

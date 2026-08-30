@@ -37,10 +37,6 @@ class WinterHumidifierSwitch(LinkingTempEntity, SwitchEntity):
         super().__init__(hub, "winter_humidifier")
 
     @property
-    def available(self) -> bool:
-        return self.hub.available and self.hub.state.mode == "heat"
-
-    @property
     def is_on(self) -> bool | None:
         if self.hub.state.winter_humidifier is None:
             return None

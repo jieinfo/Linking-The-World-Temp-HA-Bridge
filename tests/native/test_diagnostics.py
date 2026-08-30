@@ -197,10 +197,10 @@ async def test_queued_mode_is_revalidated_after_power_changes(
     assert hub.health.snapshot()["counters"]["commands_blocked"] == 1
 
 
-async def test_queued_humidifier_is_revalidated_after_mode_changes(
+async def test_queued_humidifier_is_sent_after_mode_changes(
     hass, mock_config_entry
 ) -> None:
-    """A queued humidifier command cannot leave heat mode before dispatch."""
+    """A queued humidifier command follows the controller's native behavior."""
     hub = _ready_command_hub(hass, mock_config_entry)
     client = _CommandClient()
     hub._client = client  # type: ignore[assignment]
@@ -213,10 +213,10 @@ async def test_queued_humidifier_is_revalidated_after_mode_changes(
     hub._confirm_pending("system", {"scene": "away"})
     await hub._async_dispatch_queued()
 
-    assert [command[1:] for command in client.commands] == [(4, 0)]
-    assert "system" not in hub._pending
+    assert [command[1:] for command in client.commands] == [(4, 0), (5, 1)]
+    assert hub._pending["system"].expected == {"winter_humidifier": "ON"}
     assert "system" not in hub._queued
-    assert hub.health.snapshot()["counters"]["commands_blocked"] == 1
+    assert hub.health.snapshot()["counters"]["commands_blocked"] == 0
 
 
 async def test_total_control_queue_drops_reversal_to_verified_state(
@@ -694,6 +694,8 @@ async def test_diagnostic_entities_remain_available_and_use_safe_stable_states(
         == "authentication_rejected"
     )
     assert DiagnosticSensor(hub, descriptions["last_command"]).native_value == "timeout"
+    hub.last_command_status = "rejected:冬季加湿"
+    assert DiagnosticSensor(hub, descriptions["last_command"]).native_value == "rejected"
     assert DiagnosticSensor(hub, descriptions["connection_stage"]).available
     assert DiagnosticSensor(hub, descriptions["connection_error"]).available
     assert ControllerConnectionSensor(hub).available

@@ -18,6 +18,7 @@ _COMMAND_STATES = frozenset(
         "waiting",
         "queued",
         "confirmed",
+        "rejected",
         "retrying",
         "timeout",
         "timeout_continuing",
