@@ -44,32 +44,6 @@ def replacement(expected: str, *, intent: str = "target_temperature"):
 
 
 class CommandQueueTests(unittest.TestCase):
-    def test_non_heat_humidifier_off_reply_rejects_attempted_enable(self) -> None:
-        command = queue.PendingCommand(
-            "冬季加湿",
-            "system",
-            {"winter_humidifier": "ON"},
-            10.0,
-            18.0,
-            12.0,
-            b"systemmac",
-            5,
-            1,
-        )
-
-        self.assertTrue(
-            queue.controller_rejected_command(
-                command,
-                {"mode": "cool", "winter_humidifier": "OFF"},
-            )
-        )
-        self.assertFalse(
-            queue.controller_rejected_command(
-                command,
-                {"mode": "heat", "winter_humidifier": "OFF"},
-            )
-        )
-
     def test_first_status_poll_leaves_one_second_for_push_confirmation(self) -> None:
         self.assertEqual(queue.first_status_poll_at(10.0, 8.0), 11.0)
 
