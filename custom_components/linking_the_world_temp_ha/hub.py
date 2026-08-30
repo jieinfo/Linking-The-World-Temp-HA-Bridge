@@ -21,7 +21,6 @@ from .command_queue import (
     QueuedCommand,
     coalesce_queued,
     command_intent,
-    controller_rejected_command,
     first_status_poll_at,
     temperature_retry_is_allowed,
 )
@@ -265,6 +264,30 @@ class LinkingTempHub:
             return "请先关闭科技系统，再切换运行模式"
         return None
 
+    def _winter_humidifier_block_reason(self) -> str | None:
+        if self.state.mode != "heat":
+            return "冬季加湿仅能在制热模式下使用"
+        commands = [
+            command
+            for command in (
+                self._pending.get("system"),
+                *self._queued.get("system", ()),
+            )
+            if command is not None
+        ]
+        if any(
+            (mode := command.expected.get("mode")) is not None and mode != "heat"
+            for command in commands
+        ):
+            return "科技系统正在离开制热模式，冬季加湿不能操作"
+        return None
+
+    def _winter_humidifier_dispatch_block_reason(self) -> str | None:
+        """Revalidate confirmed mode without blocking on later queue entries."""
+        if self.state.mode != "heat":
+            return "冬季加湿仅能在制热模式下使用"
+        return None
+
     async def async_set_system_power(self, enabled: bool) -> None:
         await self._async_send_tracked(
             "system",
@@ -305,6 +328,8 @@ class LinkingTempHub:
         )
 
     async def async_set_winter_humidifier(self, enabled: bool) -> None:
+        if reason := self._winter_humidifier_block_reason():
+            raise HomeAssistantError(reason)
         await self._async_send_tracked(
             "system",
             "冬季加湿",
@@ -313,6 +338,7 @@ class LinkingTempHub:
             COMMAND_WINTER_HUMIDIFIER,
             1 if enabled else 0,
             coalesce=True,
+            send_guard=self._winter_humidifier_dispatch_block_reason,
         )
 
     async def async_set_energy_saving(self, enabled: bool) -> None:
@@ -899,34 +925,20 @@ class LinkingTempHub:
 
     def _confirm_pending(self, target: str, actual: dict[str, str | None]) -> None:
         pending = self._pending.get(target)
-        if pending is None:
-            return
-        confirmed = all(
+        if pending is None or not all(
             actual.get(key) == value for key, value in pending.expected.items()
-        )
-        rejected = controller_rejected_command(pending, actual)
-        if not confirmed and not rejected:
+        ):
             return
         self._pending.pop(target, None)
         self._record_command_queue_depth()
-        if rejected:
-            self.last_command_status = f"rejected:{pending.label}"
-            self.health.increment("commands_rejected")
-            _LOGGER.info(
-                "MC7021 rejected a command in the current operating mode: "
-                "target_type=%s command_code=%d",
-                self._command_target_type(target),
-                pending.command,
-            )
-        else:
-            self.last_command_status = f"confirmed:{pending.label}"
-            self.health.increment("commands_confirmed")
-            self.health.increment(
-                "commands_confirmed_after_query"
-                if pending.status_queries
-                else "commands_confirmed_by_push"
-            )
-            self.health.record_confirmation_latency(time.monotonic() - pending.sent_at)
+        self.last_command_status = f"confirmed:{pending.label}"
+        self.health.increment("commands_confirmed")
+        self.health.increment(
+            "commands_confirmed_after_query"
+            if pending.status_queries
+            else "commands_confirmed_by_push"
+        )
+        self.health.record_confirmation_latency(time.monotonic() - pending.sent_at)
         self.health.record_command_confirmation()
         self.repairs.set_command_timeout(False)
 
