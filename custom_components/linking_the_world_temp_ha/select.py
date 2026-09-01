@@ -20,9 +20,7 @@ class SystemModeSelect(LinkingTempEntity, SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Keep the entity online while hiding actions the controller rejects."""
-        if not self.hub.can_change_system_mode and (current := self.current_option):
-            return [current]
+        """Expose a stable option set for HA and HomeKit accessories."""
         return list(MODE_BY_LABEL)
 
     @property
@@ -31,15 +29,21 @@ class SystemModeSelect(LinkingTempEntity, SelectEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, str | bool]:
+        if self.hub.state.power not in ("ON", "OFF"):
+            hint = "科技系统总开关状态尚未确认"
+        elif not self.hub.can_change_system_mode:
+            hint = "总控开关状态正在变化，请稍后再切换模式"
+        elif self.hub.state.power == "ON":
+            hint = "切换模式时将自动关闭并恢复科技系统"
+        else:
+            hint = "可以切换模式"
         return {
             "can_change_mode": self.hub.can_change_system_mode,
-            "提示": "请先关闭科技系统再切换模式"
-            if not self.hub.can_change_system_mode
-            else "可以切换模式",
+            "提示": hint,
         }
 
     async def async_select_option(self, option: str) -> None:
-        await self.hub.async_set_mode(MODE_BY_LABEL[option])
+        await self.hub.async_select_mode(MODE_BY_LABEL[option])
 
 
 class SystemSceneSelect(LinkingTempEntity, SelectEntity):
