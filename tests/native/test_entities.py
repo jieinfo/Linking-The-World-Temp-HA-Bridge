@@ -810,10 +810,10 @@ async def test_system_commands_queue_independent_intents_and_keep_latest_mode(
     assert hub._pending["system"].expected == {"mode": "ventilation"}
 
 
-async def test_mode_select_remains_available_but_locks_options_while_system_runs(
+async def test_mode_select_keeps_all_options_while_system_runs(
     hass, mock_config_entry
 ) -> None:
-    """The mode entity stays understandable while preventing invalid UI actions."""
+    """HomeKit always receives the complete, stable set of exclusive modes."""
     hub = LinkingTempHub(hass, mock_config_entry, HealthTracker())
     hub.connected = True
     hub.protocol_verified = True
@@ -823,18 +823,18 @@ async def test_mode_select_remains_available_but_locks_options_while_system_runs
 
     hub.state.power = "ON"
     assert entity.available
-    assert entity.options == ["制冷"]
-    assert entity.extra_state_attributes["can_change_mode"] is False
+    assert entity.options == ["制冷", "制热", "通风", "除湿"]
+    assert entity.extra_state_attributes["can_change_mode"] is True
 
     hub.state.power = "OFF"
     assert entity.options == ["制冷", "制热", "通风", "除湿"]
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
-async def test_mode_select_locks_while_power_on_is_queued(
+async def test_mode_select_rejects_a_new_transition_while_power_is_changing(
     hass, setup_integration, fake_controller
 ) -> None:
-    """The mode UI accounts for an earlier queued power-on intent."""
+    """A separate in-flight power request cannot be folded into a mode transaction."""
     hub = setup_integration.hub
     hub.command_min_interval = 0
     await fake_controller.async_send_status(_system_status(hub, power=False, mode=1))
@@ -844,10 +844,150 @@ async def test_mode_select_locks_while_power_on_is_queued(
     await hub.async_set_scene("away")
     await hub.async_set_system_power(True)
 
-    assert entity.options == ["制冷"]
+    assert entity.options == ["制冷", "制热", "通风", "除湿"]
     assert entity.extra_state_attributes["can_change_mode"] is False
-    with pytest.raises(HomeAssistantError, match="请先关闭"):
-        await hub.async_set_mode("heat")
+    with pytest.raises(HomeAssistantError, match="总控开关状态正在变化"):
+        await entity.async_select_option("制热")
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_mode_selection_power_cycles_an_enabled_system(
+    hass, setup_integration, fake_controller
+) -> None:
+    """Selecting another mode performs one confirmed off-mode-on transaction."""
+    hub = setup_integration.hub
+    hub.command_min_interval = 0
+    controller = {"power": True, "mode": 1}
+    commands: list[tuple[int, int | None]] = []
+
+    async def acknowledge_command(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) != hub.tech_system_mac:
+            return
+        command = fields.get(0x0009, b"\x00")[0]
+        value_bytes = fields.get(0x000A)
+        value = value_bytes[0] if value_bytes else None
+        commands.append((command, value))
+        if command == 1:
+            controller["power"] = False
+        elif command == 2:
+            controller["power"] = True
+        elif command == 3 and value is not None:
+            controller["mode"] = value
+        await fake_controller.async_send_status(
+            _system_status(
+                hub,
+                power=controller["power"],
+                mode=controller["mode"],
+            )
+        )
+
+    fake_controller.on_command = acknowledge_command
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await _wait_for(lambda: hub.available and hub.state.power == "ON")
+    mode_entity = _entity_id(hass, hub.entry.entry_id, "select", "system_mode")
+
+    await hass.services.async_call(
+        select.DOMAIN,
+        select.SERVICE_SELECT_OPTION,
+        {"entity_id": mode_entity, "option": "制热"},
+        blocking=True,
+    )
+
+    assert commands == [(1, None), (3, 2), (2, None)]
+    assert hub.state.power == "ON"
+    assert hub.state.mode == "heat"
+    assert hass.states.get(mode_entity).state == "制热"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_mode_selection_keeps_a_disabled_system_off(
+    setup_integration, fake_controller
+) -> None:
+    """Selecting a mode while disabled sends no unnecessary power commands."""
+    hub = setup_integration.hub
+    hub.command_min_interval = 0
+    commands: list[tuple[int, int | None]] = []
+
+    async def acknowledge_mode(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) != hub.tech_system_mac:
+            return
+        command = fields.get(0x0009, b"\x00")[0]
+        value_bytes = fields.get(0x000A)
+        value = value_bytes[0] if value_bytes else None
+        commands.append((command, value))
+        if command == 3 and value is not None:
+            await fake_controller.async_send_status(
+                _system_status(hub, power=False, mode=value)
+            )
+
+    fake_controller.on_command = acknowledge_mode
+    await fake_controller.async_send_status(_system_status(hub, power=False, mode=1))
+    await _wait_for(lambda: hub.available and hub.state.power == "OFF")
+
+    await hub.async_select_mode("heat")
+
+    assert commands == [(3, 2)]
+    assert hub.state.power == "OFF"
+    assert hub.state.mode == "heat"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_reselecting_the_active_mode_sends_no_command(
+    setup_integration, fake_controller
+) -> None:
+    """HomeKit turning off its active option cannot power-cycle the system."""
+    hub = setup_integration.hub
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await _wait_for(lambda: hub.available and hub.state.power == "ON")
+    command_count = sum(
+        frame.kind == 4 and frame.opcode == 9
+        for frame in fake_controller.received_frames
+    )
+
+    await hub.async_select_mode("cool")
+
+    assert sum(
+        frame.kind == 4 and frame.opcode == 9
+        for frame in fake_controller.received_frames
+    ) == command_count
+    assert hub.state.power == "ON"
+    assert hub.state.mode == "cool"
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_failed_mode_confirmation_leaves_the_system_safely_off(
+    setup_integration, fake_controller
+) -> None:
+    """A failed middle step never blindly restores power after the wrong mode."""
+    hub = setup_integration.hub
+    hub.command_min_interval = 0
+    hub.command_confirmation_timeout = 0.1
+    commands: list[tuple[int, int | None]] = []
+
+    async def acknowledge_only_power_off(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) != hub.tech_system_mac:
+            return
+        command = fields.get(0x0009, b"\x00")[0]
+        value_bytes = fields.get(0x000A)
+        commands.append((command, value_bytes[0] if value_bytes else None))
+        if command == 1:
+            await fake_controller.async_send_status(
+                _system_status(hub, power=False, mode=1)
+            )
+
+    fake_controller.on_command = acknowledge_only_power_off
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await _wait_for(lambda: hub.available and hub.state.power == "ON")
+
+    with pytest.raises(HomeAssistantError, match="模式切换未得到主机确认"):
+        await hub.async_select_mode("heat")
+
+    assert commands == [(1, None), (3, 2)]
+    assert hub.state.power == "OFF"
+    assert hub.state.mode == "cool"
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

@@ -156,6 +156,7 @@ class LinkingTempHub:
         self._runner: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._command_lock = asyncio.Lock()
+        self._mode_transition_lock = asyncio.Lock()
         # Panel reports and Repair-driven deletion share this lock. A report
         # either invalidates an open Repair before its confirmation is checked,
         # or arrives after deletion and is treated as a fresh discovery.
@@ -240,21 +241,26 @@ class LinkingTempHub:
 
     @property
     def can_change_system_mode(self) -> bool:
-        """Project confirmed and earlier queued power intent into the mode interlock."""
-        if not self.state.can_change_mode:
-            return False
-        commands = [
-            command
-            for command in (
-                self._pending.get("system"),
-                *self._queued.get("system", ()),
-            )
-            if command is not None
-        ]
-        return not any(command.expected.get("power") == "ON" for command in commands)
+        """Return whether the UI can start one safe mode transition."""
+        return (
+            self.state.power in ("ON", "OFF")
+            and not self._mode_transition_lock.locked()
+            and not self._has_system_intent("power")
+        )
+
+    def _has_system_intent(self, intent: str) -> bool:
+        """Return whether one pending or queued system command changes intent."""
+        commands = (
+            self._pending.get("system"),
+            *self._queued.get("system", ()),
+        )
+        return any(
+            command is not None and command_intent(command.expected) == intent
+            for command in commands
+        )
 
     def _mode_change_block_reason(self) -> str | None:
-        if not self.can_change_system_mode:
+        if not self.state.can_change_mode or self._has_system_intent("power"):
             return "请先关闭科技系统，再切换运行模式"
         return None
 
@@ -313,6 +319,80 @@ class LinkingTempHub:
             coalesce=True,
             send_guard=self._mode_dispatch_block_reason,
         )
+
+    async def async_select_mode(self, mode: str) -> None:
+        """Select a mode, safely power-cycling an enabled system when required."""
+        if mode not in MODE_VALUES:
+            raise HomeAssistantError(f"不支持的运行模式: {mode}")
+        async with self._mode_transition_lock:
+            if self.state.mode == mode:
+                return
+            if self.state.power not in ("ON", "OFF"):
+                raise HomeAssistantError("科技系统总开关状态尚未确认")
+            if self._has_system_intent("power"):
+                raise HomeAssistantError(
+                    "总控开关状态正在变化，请稍后再切换模式"
+                )
+
+            restore_power = self.state.power == "ON"
+            if restore_power:
+                await self.async_set_system_power(False)
+                await self._async_wait_for_system_value(
+                    "power",
+                    "OFF",
+                    "科技系统关闭未得到主机确认，模式切换已中止",
+                )
+
+            await self.async_set_mode(mode)
+            await self._async_wait_for_system_value(
+                "mode",
+                mode,
+                "模式切换未得到主机确认，科技系统保持关闭",
+            )
+
+            if restore_power:
+                await self.async_set_system_power(True)
+                await self._async_wait_for_system_value(
+                    "power",
+                    "ON",
+                    "模式已切换，但科技系统恢复开启未得到主机确认",
+                )
+
+    async def _async_wait_for_system_value(
+        self, intent: str, expected: str, error_message: str
+    ) -> None:
+        """Wait until a tracked system command is confirmed by a real status report."""
+        changed = asyncio.Event()
+        remove_listener = self.async_add_listener(changed.set)
+        command_count = 1 + int("system" in self._pending) + len(
+            self._queued.get("system", ())
+        )
+        timeout = self.command_confirmation_timeout * command_count + 2
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    if (
+                        getattr(self.state, intent, None) == expected
+                        and not self._has_system_intent(intent)
+                    ):
+                        return
+                    if not self.available:
+                        raise HomeAssistantError(
+                            f"{error_message}：主机连接已经断开"
+                        )
+                    if not self._has_system_intent(intent):
+                        raise HomeAssistantError(error_message)
+                    changed.clear()
+                    if (
+                        getattr(self.state, intent, None) == expected
+                        and not self._has_system_intent(intent)
+                    ):
+                        return
+                    await changed.wait()
+        except TimeoutError as error:
+            raise HomeAssistantError(error_message) from error
+        finally:
+            remove_listener()
 
     async def async_set_scene(self, scene: str) -> None:
         if scene not in SCENE_VALUES:
