@@ -276,14 +276,20 @@ async def _async_remove_stale_panel(
         for entity in owned_entities:
             entity_registry.async_remove(entity.entity_id)
 
-        device = device_registry.async_get_device(identifiers={panel_identifier})
-        if device is not None:
-            remaining_entities = er.async_entries_for_device(
-                entity_registry, device.id, include_disabled_entities=True
+        try:
+            device_id = dr.async_get_device_id_by_identifier(
+                hass, panel_identifier, config_entry_id=entry.entry_id
             )
-            unrelated_entries = set(device.config_entries) - {entry.entry_id}
-            if not remaining_entities and not unrelated_entries:
-                device_registry.async_remove_device(device.id)
+        except ValueError:
+            return
+        device = device_registry.async_get(device_id)
+        if device is None or device.config_entry_id != entry.entry_id:
+            return
+        remaining_entities = er.async_entries_for_device(
+            entity_registry, device.id, include_disabled_entities=True
+        )
+        if not remaining_entities:
+            device_registry.async_remove_device(device.id)
 
     def issue_is_current() -> bool:
         return ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None

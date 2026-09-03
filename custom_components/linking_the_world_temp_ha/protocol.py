@@ -6,8 +6,10 @@ import asyncio
 import logging
 import struct
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from .const import DEFAULT_CLIENT_ID, MODE_VALUES, SCENE_VALUES
 
@@ -17,6 +19,7 @@ MAGIC = b"dooyashcp"
 VERSION = 1
 TRAILER = b"#"
 MAX_PAYLOAD_LENGTH = 16_384
+PARSER_ANOMALY_LIMIT = 8
 CONNECT_TIMEOUT = 8
 HELLO_TIMEOUT = 8
 LOGIN_TIMEOUT = 8
@@ -94,10 +97,88 @@ class YasHcpDecoder:
 
     def __init__(self) -> None:
         self._buffer = bytearray()
+        self._parser_anomalies: deque[dict[str, object]] = deque(
+            maxlen=PARSER_ANOMALY_LIMIT
+        )
         self.frames_decoded = 0
         self.frames_malformed = 0
         self.frames_resynchronized = 0
         self.bytes_discarded = 0
+
+    @property
+    def parser_anomalies(self) -> list[dict[str, object]]:
+        """Return bounded, payload-free descriptions of malformed frames."""
+        return [dict(anomaly) for anomaly in self._parser_anomalies]
+
+    def _record_parser_anomaly(
+        self,
+        *,
+        reason: str,
+        outer_length: int,
+        raw: bytes | None,
+    ) -> None:
+        """Retain structural metadata without retaining protocol payload bytes."""
+        for anomaly in self._parser_anomalies:
+            if anomaly["recovery"] == "pending":
+                anomaly["additional_anomalies_before_recovery"] = (
+                    int(anomaly["additional_anomalies_before_recovery"]) + 1
+                )
+
+        magic_header_valid = raw is not None and raw.startswith(MAGIC)
+        header_available = (
+            magic_header_valid and len(raw) >= len(MAGIC) + 7
+            if raw is not None
+            else False
+        )
+        body_length = (
+            struct.unpack_from("<H", raw, len(MAGIC) + 5)[0]
+            if raw is not None and header_available
+            else None
+        )
+        expected_length = (
+            len(MAGIC) + 7 + body_length + len(TRAILER)
+            if body_length is not None
+            else None
+        )
+        self._parser_anomalies.append(
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "reason": reason,
+                "outer_length_declared": outer_length,
+                "payload_bytes_consumed": len(raw) if raw is not None else None,
+                "body_length_declared": body_length,
+                "payload_length_expected": expected_length,
+                "magic_header_valid": magic_header_valid,
+                "trailer_present": raw.endswith(TRAILER) if raw is not None else None,
+                "kind": raw[len(MAGIC) + 1] if header_available else None,
+                "opcode": raw[len(MAGIC) + 2] if header_available else None,
+                "sequence": (
+                    struct.unpack_from("<H", raw, len(MAGIC) + 3)[0]
+                    if header_available
+                    else None
+                ),
+                "recovery": "pending",
+                "immediate_recovery": None,
+                "additional_anomalies_before_recovery": 0,
+                "recovery_kind": None,
+                "recovery_opcode": None,
+                "recovery_sequence": None,
+            }
+        )
+
+    def _record_parser_recovery(self, frame: YasHcpFrame) -> None:
+        """Mark whether the next successfully parsed frame restored alignment."""
+        for anomaly in self._parser_anomalies:
+            if anomaly["recovery"] != "pending":
+                continue
+            additional = int(anomaly["additional_anomalies_before_recovery"])
+            anomaly["recovery"] = (
+                "next_valid_frame" if additional == 0 else "after_additional_anomalies"
+            )
+            anomaly["immediate_recovery"] = additional == 0
+            anomaly["recovery_kind"] = frame.kind
+            anomaly["recovery_opcode"] = frame.opcode
+            anomaly["recovery_sequence"] = frame.sequence
 
     def feed(self, data: bytes) -> list[YasHcpFrame]:
         self._buffer.extend(data)
@@ -129,6 +210,11 @@ class YasHcpDecoder:
                 _LOGGER.warning(
                     "Discarded YAS HCP frame with excessive length: %d", payload_length
                 )
+                self._record_parser_anomaly(
+                    reason="outer_length_exceeds_limit",
+                    outer_length=payload_length,
+                    raw=None,
+                )
                 del self._buffer[0]
                 self.frames_malformed += 1
                 self.bytes_discarded += 1
@@ -147,6 +233,11 @@ class YasHcpDecoder:
                 _LOGGER.warning(
                     "Discarded malformed YAS HCP payload (%d bytes)", len(raw)
                 )
+                self._record_parser_anomaly(
+                    reason="invalid_envelope",
+                    outer_length=payload_length,
+                    raw=raw,
+                )
                 self.frames_malformed += 1
                 continue
             body_length = struct.unpack_from("<H", raw, len(MAGIC) + 5)[0]
@@ -155,16 +246,21 @@ class YasHcpDecoder:
                 _LOGGER.warning(
                     "Discarded YAS HCP payload with invalid length (%d bytes)", len(raw)
                 )
+                self._record_parser_anomaly(
+                    reason="body_length_mismatch",
+                    outer_length=payload_length,
+                    raw=raw,
+                )
                 self.frames_malformed += 1
                 continue
-            output.append(
-                YasHcpFrame(
-                    kind=raw[len(MAGIC) + 1],
-                    opcode=raw[len(MAGIC) + 2],
-                    sequence=struct.unpack_from("<H", raw, len(MAGIC) + 3)[0],
-                    body=raw[len(MAGIC) + 7 : len(MAGIC) + 7 + body_length],
-                )
+            frame = YasHcpFrame(
+                kind=raw[len(MAGIC) + 1],
+                opcode=raw[len(MAGIC) + 2],
+                sequence=struct.unpack_from("<H", raw, len(MAGIC) + 3)[0],
+                body=raw[len(MAGIC) + 7 : len(MAGIC) + 7 + body_length],
             )
+            self._record_parser_recovery(frame)
+            output.append(frame)
             self.frames_decoded += 1
 
 
@@ -332,7 +428,9 @@ def decode_thermostat_status(
 FrameCallback = Callable[[YasHcpFrame], Awaitable[None] | None]
 StatusCallback = Callable[[bytes], Awaitable[None] | None]
 StageCallback = Callable[[str], Awaitable[None] | None]
-ParserEventCallback = Callable[[str, int], Awaitable[None] | None]
+ParserEventCallback = Callable[
+    [str, int, list[dict[str, object]]], Awaitable[None] | None
+]
 
 
 class AsyncMoorgenClient:
@@ -525,6 +623,7 @@ class AsyncMoorgenClient:
             self._decoder.frames_resynchronized,
             self._decoder.bytes_discarded,
         )
+        parser_anomalies = self._decoder.parser_anomalies
         for name, change in zip(
             (
                 "frames_decoded",
@@ -536,7 +635,7 @@ class AsyncMoorgenClient:
             strict=True,
         ):
             if change > 0:
-                result = self.on_parser_event(name, change)
+                result = self.on_parser_event(name, change, parser_anomalies)
                 if result is not None:
                     await result
 

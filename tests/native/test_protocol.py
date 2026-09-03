@@ -67,6 +67,70 @@ class DecoderTests(unittest.TestCase):
         self.assertEqual(decoder.feed(frame.encode()[:5]), [])
         self.assertEqual(decoder.feed(frame.encode()[5:]), [frame])
 
+    def test_malformed_payload_records_structure_and_next_frame_recovery(self) -> None:
+        """Diagnostics describe framing failures without retaining payload bytes."""
+        decoder = protocol.YasHcpDecoder()
+        malformed_frame = protocol.YasHcpFrame(5, 12, 41, b"x" * 23).encode()
+        declared_length = struct.unpack_from("<H", malformed_frame, 1)[0] - 1
+        malformed_frame = (
+            malformed_frame[:1]
+            + struct.pack("<H", declared_length)
+            + malformed_frame[3:]
+        )
+        recovered_frame = protocol.YasHcpFrame(5, 12, 42, b"ok")
+
+        self.assertEqual(
+            decoder.feed(malformed_frame + recovered_frame.encode()),
+            [recovered_frame],
+        )
+
+        diagnostics = decoder.parser_anomalies
+        self.assertEqual(len(diagnostics), 1)
+        anomaly = diagnostics[0]
+        self.assertEqual(anomaly["reason"], "invalid_envelope")
+        self.assertEqual(anomaly["outer_length_declared"], 39)
+        self.assertEqual(anomaly["payload_bytes_consumed"], 39)
+        self.assertEqual(anomaly["body_length_declared"], 23)
+        self.assertEqual(anomaly["payload_length_expected"], 40)
+        self.assertTrue(anomaly["magic_header_valid"])
+        self.assertFalse(anomaly["trailer_present"])
+        self.assertEqual(
+            (anomaly["kind"], anomaly["opcode"], anomaly["sequence"]),
+            (5, 12, 41),
+        )
+        self.assertEqual(anomaly["recovery"], "next_valid_frame")
+        self.assertTrue(anomaly["immediate_recovery"])
+        self.assertEqual(
+            (
+                anomaly["recovery_kind"],
+                anomaly["recovery_opcode"],
+                anomaly["recovery_sequence"],
+            ),
+            (5, 12, 42),
+        )
+        self.assertNotIn("raw", anomaly)
+        self.assertNotIn("body", anomaly)
+
+    def test_malformed_payload_recovery_reports_intervening_anomaly(self) -> None:
+        """A second bad frame prevents the first anomaly being called immediate."""
+        decoder = protocol.YasHcpDecoder()
+
+        def without_trailer(frame: protocol.YasHcpFrame) -> bytes:
+            encoded = frame.encode()
+            declared = struct.unpack_from("<H", encoded, 1)[0] - 1
+            return encoded[:1] + struct.pack("<H", declared) + encoded[3:]
+
+        decoder.feed(without_trailer(protocol.YasHcpFrame(5, 12, 1, b"a")))
+        decoder.feed(without_trailer(protocol.YasHcpFrame(5, 12, 2, b"b")))
+        decoder.feed(protocol.YasHcpFrame(5, 12, 3, b"ok").encode())
+
+        first, second = decoder.parser_anomalies
+        self.assertEqual(first["recovery"], "after_additional_anomalies")
+        self.assertFalse(first["immediate_recovery"])
+        self.assertEqual(first["additional_anomalies_before_recovery"], 1)
+        self.assertEqual(second["recovery"], "next_valid_frame")
+        self.assertTrue(second["immediate_recovery"])
+
 
 class StatusTests(unittest.TestCase):
     def test_total_control_state_has_unknown_defaults_for_full_status_block(self) -> None:

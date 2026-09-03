@@ -145,11 +145,13 @@ class LinkingTempHub:
         self.filtered: dict[str, FilteredMeasurements] = {}
         self.health = health
         self.repairs = RepairManager(hass, entry)
+        self.controller_device_id: str | None = None
         self.connected = False
         self.protocol_verified = False
         self.protocol_status = "waiting"
         self.last_connection_error = "starting"
         self.last_command_status = "idle"
+        self.parser_anomalies: list[dict[str, object]] = []
 
         self._client: AsyncMoorgenClient | None = None
         self._listeners: set[Callable[[], None]] = set()
@@ -666,9 +668,16 @@ class LinkingTempHub:
         self._mark_stage(connection_stage)
         self._notify()
 
-    async def _async_parser_event(self, name: str, count: int) -> None:
+    async def _async_parser_event(
+        self,
+        name: str,
+        count: int,
+        parser_anomalies: list[dict[str, object]] | None = None,
+    ) -> None:
         """Record decoder counters only; raw protocol data stays in the client."""
         self.health.increment(name, count)
+        if parser_anomalies is not None:
+            self.parser_anomalies = [dict(anomaly) for anomaly in parser_anomalies]
         if name == "frames_malformed":
             await self.panel_registry.async_pause_monitoring(datetime.now(UTC))
 

@@ -10,11 +10,13 @@ import pytest
 from homeassistant.components import climate, select, switch
 from homeassistant.const import ATTR_TEMPERATURE
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 import custom_components.linking_the_world_temp_ha.hub as hub_module
 from custom_components.linking_the_world_temp_ha.const import DOMAIN
+from custom_components.linking_the_world_temp_ha.entity import LinkingThermostatEntity
 from custom_components.linking_the_world_temp_ha.health import HealthTracker
 from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from custom_components.linking_the_world_temp_ha.command_queue import QueuedCommand
@@ -103,6 +105,34 @@ def _entity_id(hass, entry_id: str, platform: str, unique_key: str) -> str:
     )
     assert entity_id is not None
     return entity_id
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+async def test_room_panel_device_info_uses_registered_parent_device_id(
+    hass, setup_integration, fake_controller, monkeypatch
+):
+    """A room panel links to the exact controller device registered for its entry."""
+    hub = setup_integration.hub
+    mac_hex = "ff00ffffffff01ff"
+    monkeypatch.setattr(
+        dr.async_get(hass),
+        "async_get_device",
+        lambda *_args, **_kwargs: pytest.fail(
+            "room-name updates used the deprecated ambiguous device lookup"
+        ),
+    )
+    await fake_controller.async_send_status(_system_status(hub, power=True))
+    await fake_controller.async_send_status(_thermostat_status(hub, mac_hex))
+    await _wait_for(lambda: mac_hex in hub.thermostats)
+
+    device_info = LinkingThermostatEntity(hub, mac_hex, "relationship").device_info
+
+    assert device_info["via_device_id"] == hub.controller_device_id
+    assert "via_device" not in device_info
+
+    hub.controller_device_id = None
+    with pytest.raises(RuntimeError, match="Controller device was not registered"):
+        LinkingThermostatEntity(hub, mac_hex, "missing_parent").device_info
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")

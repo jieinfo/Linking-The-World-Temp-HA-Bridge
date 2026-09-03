@@ -45,6 +45,8 @@ class RepositorySurfaceTests(unittest.TestCase):
 
         self.assertIn("tags: ['v*']", workflow)
         self.assertIn("scripts/release_metadata.py --tag", workflow)
+        self.assertIn("'0.13.354'", workflow)
+        self.assertIn("'0.13.363'", workflow)
         self.assertNotIn("docker build", workflow)
 
     def test_public_repository_urls_use_integration_name(self) -> None:

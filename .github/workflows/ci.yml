@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pytest_ha: ['0.13.354', '0.13.357']
+        pytest_ha: ['0.13.354', '0.13.363']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
