@@ -6,25 +6,25 @@ from time import monotonic
 import unittest
 
 import pytest
+import voluptuous as vol
+from homeassistant.helpers import config_validation as cv
+
+from custom_components.linking_the_world_temp_ha.config_flow import (
+    _connection_schema,
+    _normalize_connection_data,
+)
+from custom_components.linking_the_world_temp_ha.const import DOMAIN
+from custom_components.linking_the_world_temp_ha.protocol import (
+    AuthenticationRejected,
+    HandshakeTimeout,
+    IncompatibleProtocol,
+    LoginTimeout,
+    TcpConnectError,
+)
+from tests.helpers import FakeControllerBehavior, FakeMC7021Server
 
 try:
-    import voluptuous as vol
-    from homeassistant.helpers import config_validation as cv
     from voluptuous_serialize import convert
-
-    from custom_components.linking_the_world_temp_ha.config_flow import (
-        _connection_schema,
-        _normalize_connection_data,
-    )
-    from custom_components.linking_the_world_temp_ha.const import DOMAIN
-    from custom_components.linking_the_world_temp_ha.protocol import (
-        AuthenticationRejected,
-        HandshakeTimeout,
-        IncompatibleProtocol,
-        LoginTimeout,
-        TcpConnectError,
-    )
-    from tests.helpers import FakeControllerBehavior, FakeMC7021Server
 except ImportError:
     convert = None
 
