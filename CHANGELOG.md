@@ -1,5 +1,18 @@
 # Linking The World Temp HA changelog
 
+## 1.2.9 - Home Assistant 2026.9 device registry compatibility
+
+- 按 Home Assistant 2026.9 设备注册 API 显式创建科技系统总控父设备，房间温控面板改用
+  `via_device_id` 关联父设备；设备名称、实体 ID、unique ID 和界面层级保持不变。
+- 房间名称更新与旧面板清理改为按配置项作用域精确查找设备，移除已弃用的
+  `DeviceRegistry.async_get_device()`；设备归属判断改用单一 `config_entry_id`，消除
+  2026.9 弃用警告并避免多配置项下的歧义匹配。
+- 原生测试矩阵同时覆盖最低支持的 Home Assistant 2026.8.0 与正式版 2026.9.0；项目最低
+  支持版本仍为 2026.8.0。本版本不改变 MC7021 协议、状态解析或控制行为。
+- 诊断下载新增最近 8 条异常协议帧的隐私安全结构摘要，包括外层/正文长度关系、协议头与
+  结束符状态、帧类型/操作码/序列号，以及丢弃后是否由下一有效帧立即恢复；不记录原始
+  报文、正文、账号或设备标识，便于区分主机协议变体与实际坏帧。
+
 ## 1.2.8 - One-tap confirmed mode switching
 
 - 运行模式实体始终公开制冷、制热、通风和除湿四个固定选项，避免 HomeKit Bridge 初始化

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN, PLATFORMS
@@ -15,6 +16,20 @@ from .runtime import LinkingTempConfigEntry, LinkingTempRuntime
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_ENERGY_OPTION = "enable_experimental_energy_control"
+
+
+def _register_controller_device(
+    hass: HomeAssistant, entry: LinkingTempConfigEntry
+) -> str:
+    """Create the controller before child entities need its device id."""
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        manufacturer="Moorgen",
+        model="MC7021",
+        name="科技系统总控",
+    )
+    return device.id
 
 
 def _remove_legacy_energy_artifacts(
@@ -49,6 +64,7 @@ async def async_setup_entry(
     try:
         entry.runtime_data = runtime
         runtime_assigned = True
+        hub.controller_device_id = _register_controller_device(hass, entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
         return True

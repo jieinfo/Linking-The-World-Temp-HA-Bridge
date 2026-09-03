@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
@@ -99,6 +100,46 @@ async def test_setup_uses_real_home_assistant(
     await hass.async_block_till_done()
 
     assert mock_config_entry.state is ConfigEntryState.LOADED
+
+
+async def test_setup_registers_controller_device_before_forwarding_platforms(
+    hass, mock_config_entry, monkeypatch
+):
+    """Child entities always receive a stable controller device id during setup."""
+    integration = importlib.import_module("custom_components.linking_the_world_temp_ha")
+    forwarded = False
+
+    class TrackingHub:
+        def __init__(self, _hass, entry, health) -> None:
+            self.entry = entry
+            self.health = health
+            self.panel_registry = object()
+            self.controller_device_id = None
+
+        async def async_start(self) -> None:
+            return None
+
+        async def async_stop(self) -> None:
+            return None
+
+    async def verify_parent_exists(*_args) -> None:
+        nonlocal forwarded
+        forwarded = True
+        device_id = dr.async_get_device_id_by_identifier(
+            hass,
+            (DOMAIN, mock_config_entry.entry_id),
+            config_entry_id=mock_config_entry.entry_id,
+        )
+        assert mock_config_entry.runtime_data.hub.controller_device_id == device_id
+
+    mock_config_entry.add_to_hass(hass)
+    monkeypatch.setattr(integration, "LinkingTempHub", TrackingHub)
+    monkeypatch.setattr(
+        hass.config_entries, "async_forward_entry_setups", verify_parent_exists
+    )
+
+    assert await integration.async_setup_entry(hass, mock_config_entry)
+    assert forwarded
 
 
 async def test_setup_removes_legacy_energy_sensor_and_experimental_option(
@@ -207,6 +248,7 @@ async def test_setup_stops_hub_when_platform_forward_fails(
     async def fail_forward(*_args) -> None:
         raise RuntimeError("platform forward failed")
 
+    mock_config_entry.add_to_hass(hass)
     monkeypatch.setattr(integration, "LinkingTempHub", TrackingHub)
     monkeypatch.setattr(hass.config_entries, "async_forward_entry_setups", fail_forward)
 
@@ -245,6 +287,7 @@ async def test_setup_cancellation_stops_hub_before_propagating(
         forward_started.set()
         await asyncio.Future()
 
+    mock_config_entry.add_to_hass(hass)
     monkeypatch.setattr(integration, "LinkingTempHub", TrackingHub)
     monkeypatch.setattr(hass.config_entries, "async_forward_entry_setups", block_forward)
     setup = asyncio.create_task(integration.async_setup_entry(hass, mock_config_entry))

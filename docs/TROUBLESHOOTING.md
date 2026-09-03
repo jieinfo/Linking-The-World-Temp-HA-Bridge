@@ -1,6 +1,6 @@
 # Linking The World Temp HA 故障排查
 
-本文适用于 HACS 集成 **Linking The World Temp HA 1.2.5**，最低支持
+本文适用于 HACS 集成 **Linking The World Temp HA 1.2.9**，最低支持
 Home Assistant `2026.8.0`。
 
 ## 开始前
@@ -124,6 +124,25 @@ App 复用。
 
 诊断会匿名化面板和房间为 `panel_01`、`room_01` 等本次导出内标签，并移除家庭标识。
 详见 [PRIVACY.md](PRIVACY.md)。
+
+### 异常协议帧摘要
+
+出现 `Discarded malformed YAS HCP payload` 后，下载诊断并查看
+`runtime.parser_anomalies`。这里最多保留最近 8 条结构摘要：
+
+- `outer_length_declared` 与 `payload_bytes_consumed`：外层声明的长度和解析器按该声明取出的
+  字节数；
+- `body_length_declared` 与 `payload_length_expected`：协议头声明的正文长度，以及据此推算的
+  完整载荷长度；
+- `magic_header_valid` 与 `trailer_present`：协议头和结束符是否符合当前已知格式；
+- `kind`、`opcode`、`sequence`：结构足够完整时读取到的帧类型、操作码和序列号；
+- `recovery` 与 `immediate_recovery`：下一有效帧是否立即恢复解析。`next_valid_frame` 表示
+  没有经过另一条异常帧便恢复，`after_additional_anomalies` 表示经过更多异常后恢复，
+  `pending` 表示导出诊断时尚未观察到后续有效帧。
+
+摘要不包含原始报文或正文。如果外层长度与协议头推算长度长期呈现同一种固定差值、帧类型
+也稳定一致，可能是尚未适配的主机协议变体；如果长度和结构随机变化，则更像传输损坏或帧
+边界异常。请连同警告发生时间和脱敏诊断提交，不要附带十六进制原始流量。
 
 ## 发布与现场核对表
 

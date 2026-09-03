@@ -485,6 +485,40 @@ async def test_diagnostics_metrics_follow_real_runtime_event_paths(
     assert "__dict__" not in json.dumps(result)
 
 
+async def test_diagnostics_export_parser_anomaly_structure(
+    hass, mock_config_entry
+) -> None:
+    """Parser diagnostics expose structure and recovery but never frame bytes."""
+    hub = _ready_command_hub(hass, mock_config_entry)
+    anomaly = {
+        "reason": "invalid_envelope",
+        "outer_length_declared": 39,
+        "payload_bytes_consumed": 39,
+        "body_length_declared": 23,
+        "payload_length_expected": 40,
+        "magic_header_valid": True,
+        "trailer_present": False,
+        "kind": 5,
+        "opcode": 12,
+        "sequence": 41,
+        "recovery": "next_valid_frame",
+        "immediate_recovery": True,
+        "additional_anomalies_before_recovery": 0,
+        "recovery_kind": 5,
+        "recovery_opcode": 12,
+        "recovery_sequence": 42,
+    }
+    await hub._async_parser_event("frames_malformed", 1, [anomaly])
+    mock_config_entry.runtime_data = SimpleNamespace(hub=hub, health=hub.health)
+
+    result = await async_get_config_entry_diagnostics(hass, mock_config_entry)
+
+    assert result["runtime"]["parser_anomalies"] == [anomaly]
+    serialized = json.dumps(result)
+    assert "raw" not in serialized
+    assert "payload_hex" not in serialized
+
+
 async def test_command_confirmation_prefers_push_before_status_query(
     hass, mock_config_entry
 ) -> None:

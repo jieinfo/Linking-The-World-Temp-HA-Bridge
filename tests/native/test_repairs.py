@@ -429,6 +429,13 @@ async def test_stale_panel_confirm_removes_device_when_no_unrelated_entities(
         config_entry_id=entry_id,
         identifiers={(DOMAIN, f"{entry_id}_{mac_hex}")},
     )
+    monkeypatch.setattr(
+        device_registry,
+        "async_get_device",
+        lambda *_args, **_kwargs: pytest.fail(
+            "stale-panel cleanup used the deprecated ambiguous device lookup"
+        ),
+    )
     entity_registry = er.async_get(hass)
     entity_registry.async_get_or_create(
         "climate",

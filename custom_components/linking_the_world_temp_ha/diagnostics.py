@@ -120,6 +120,7 @@ async def async_get_config_entry_diagnostics(
                 "pending": len(hub._pending),
                 "queued": sum(len(commands) for commands in hub._queued.values()),
             },
+            "parser_anomalies": [dict(anomaly) for anomaly in hub.parser_anomalies],
             "thermostat_count": len(hub.thermostats),
             "panels": _anonymous_thermostats(hub),
             "health": runtime.health.snapshot(),

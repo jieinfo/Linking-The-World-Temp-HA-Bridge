@@ -53,12 +53,14 @@ class LinkingThermostatEntity(LinkingTempEntity):
     @property
     def device_info(self) -> DeviceInfo:
         thermostat = self.hub.thermostats[self.mac_hex]
+        if self.hub.controller_device_id is None:
+            raise RuntimeError("Controller device was not registered before its panels")
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self.hub.entry.entry_id}_{self.mac_hex}")},
             manufacturer="Moorgen",
             model="六恒房间温控面板",
             name=self.hub.thermostat_name(thermostat),
-            via_device=(DOMAIN, self.hub.entry.entry_id),
+            via_device_id=self.hub.controller_device_id,
         )
 
     async def async_added_to_hass(self) -> None:
@@ -70,9 +72,15 @@ class LinkingThermostatEntity(LinkingTempEntity):
     def _update_device_name(self) -> None:
         """Apply a room name that may arrive after the entity was registered."""
         registry = dr.async_get(self.hass)
-        device = registry.async_get_device(
-            identifiers={(DOMAIN, f"{self.hub.entry.entry_id}_{self.mac_hex}")}
-        )
+        try:
+            device_id = dr.async_get_device_id_by_identifier(
+                self.hass,
+                (DOMAIN, f"{self.hub.entry.entry_id}_{self.mac_hex}"),
+                config_entry_id=self.hub.entry.entry_id,
+            )
+        except ValueError:
+            return
+        device = registry.async_get(device_id)
         if device is None:
             return
         name = self.hub.thermostat_name(self.hub.thermostats[self.mac_hex])
