@@ -2,7 +2,7 @@
 
 **Linking The World Temp HA** 是本地 Home Assistant 集成。它通过局域网 TCP/9000
 连接 MC7021；不需要摩根云、MQTT 或外部遥测服务。最低支持 Home Assistant
-`2026.8.0`。
+`2026.9.0`。
 
 ## 本地配置与运行数据
 

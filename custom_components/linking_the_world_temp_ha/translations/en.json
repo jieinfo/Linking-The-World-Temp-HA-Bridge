@@ -124,7 +124,9 @@
   "entity": {
     "binary_sensor": {
       "controller_connection": {"name": "Controller connection"},
-      "protocol_verified": {"name": "Protocol compatible"}
+      "protocol_verified": {"name": "Protocol compatible"},
+      "system_fault": {"name": "Controller fault"},
+      "filter_fault": {"name": "Fresh-air filter fault"}
     },
     "climate": {"room_thermostat": {"name": "Thermostat"}},
     "select": {
@@ -180,9 +182,7 @@
       "system_temperature": {"name": "Temperature"},
       "system_humidity": {"name": "Humidity"},
       "system_pm25": {"name": "PM2.5"},
-      "system_co2": {"name": "CO₂"},
-      "system_fault_code": {"name": "Controller fault raw code"},
-      "filter_fault_code": {"name": "Fresh-air filter fault raw code"}
+      "system_co2": {"name": "CO₂"}
     },
     "switch": {
       "system_power": {"name": "System power"},

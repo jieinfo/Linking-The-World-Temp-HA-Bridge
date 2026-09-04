@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
@@ -44,6 +47,36 @@ class ProtocolVerifiedSensor(LinkingTempEntity, BinarySensorEntity):
         return True
 
 
+class ControllerFaultSensor(LinkingTempEntity, BinarySensorEntity):
+    """Expose one controller fault with its raw code as diagnostic context."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(self, hub: LinkingTempHub, fault_type: str) -> None:
+        super().__init__(hub, f"{fault_type}_fault")
+        self.fault_type = fault_type
+        self._attr_translation_key = f"{fault_type}_fault"
+
+    @property
+    def raw_code(self) -> int | None:
+        if self.fault_type == "system":
+            return self.hub.state.system_fault_code
+        return self.hub.state.filter_fault_code
+
+    @property
+    def is_on(self) -> bool | None:
+        code = self.raw_code
+        return None if code is None else code != 0
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.raw_code is not None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, int | None]:
+        return {"raw_code": self.raw_code}
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -52,5 +85,7 @@ async def async_setup_entry(
         [
             ControllerConnectionSensor(hub),
             ProtocolVerifiedSensor(hub),
+            ControllerFaultSensor(hub, "system"),
+            ControllerFaultSensor(hub, "filter"),
         ]
     )

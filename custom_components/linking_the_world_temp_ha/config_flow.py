@@ -171,11 +171,7 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         unique_id: str | None = None,
         title: str | None = None,
     ) -> ConfigFlowResult:
-        """Update once and let the entry update listener schedule its reload.
-
-        Home Assistant 2026.8 disallows combining an entry update listener with
-        ``async_update_reload_and_abort`` because both paths schedule reloads.
-        """
+        """Update once and let the entry update listener schedule its reload."""
         self.hass.config_entries.async_update_entry(
             entry,
             data={**dict(entry.data), **data_updates},

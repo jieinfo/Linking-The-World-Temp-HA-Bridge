@@ -1,5 +1,17 @@
 # Linking The World Temp HA changelog
 
+## 1.3.0 - Home Assistant 2026.9 active fault alerts
+
+- 将“主机故障”和“新风滤网故障”改为 Home Assistant `problem` 类型二进制传感器：原始码
+  `0` 表示正常，非零表示检测到问题，未收到有效总控状态时保持不可用；用户可在 2026.9
+  安全面板中把它们加入活动警报或收藏。
+- 删除两个独立原始故障码传感器，升级时同步清理其实体注册记录；具体整数迁移到对应故障
+  实体的 `raw_code` 属性，继续保留故障码变化的诊断价值。
+- 保留现有严重 Repairs、去重错误日志和恢复日志；相同故障码不会刷屏，变码会更新 Repair，
+  恢复为 `0` 后自动清除，且不会阻断设备控制。
+- 最低支持版本提升为 Home Assistant `2026.9.0`，CI 只验证 2026.9 基线，不再维护或声明
+  对更早 Home Assistant 版本的兼容性。
+
 ## 1.2.9 - Home Assistant 2026.9 device registry compatibility
 
 - 按 Home Assistant 2026.9 设备注册 API 显式创建科技系统总控父设备，房间温控面板改用

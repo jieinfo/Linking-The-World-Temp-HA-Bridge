@@ -45,8 +45,8 @@ class RepositorySurfaceTests(unittest.TestCase):
 
         self.assertIn("tags: ['v*']", workflow)
         self.assertIn("scripts/release_metadata.py --tag", workflow)
-        self.assertIn("'0.13.354'", workflow)
         self.assertIn("'0.13.363'", workflow)
+        self.assertNotIn("'0.13.354'", workflow)
         self.assertNotIn("docker build", workflow)
 
     def test_public_repository_urls_use_integration_name(self) -> None:
@@ -144,14 +144,13 @@ class RepositorySurfaceTests(unittest.TestCase):
             "custom_components/linking_the_world_temp_ha/translations/zh-Hans.json",
         ):
             document = json.loads((ROOT / relative_path).read_text(encoding="utf-8"))
+            binary_sensors = document["entity"]["binary_sensor"]
             sensors = document["entity"]["sensor"]
             issues = document["issues"]
-            self.assertEqual(
-                sensors["system_fault_code"]["name"], "主机故障原始码"
-            )
-            self.assertEqual(
-                sensors["filter_fault_code"]["name"], "新风滤网故障原始码"
-            )
+            self.assertEqual(binary_sensors["system_fault"]["name"], "主机故障")
+            self.assertEqual(binary_sensors["filter_fault"]["name"], "新风滤网故障")
+            self.assertNotIn("system_fault_code", sensors)
+            self.assertNotIn("filter_fault_code", sensors)
             self.assertEqual(issues["system_fault"]["title"], "主机故障")
             self.assertEqual(issues["filter_fault"]["title"], "新风滤网故障")
 
@@ -162,18 +161,32 @@ class RepositorySurfaceTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
         self.assertEqual(
-            english["entity"]["sensor"]["system_fault_code"]["name"],
-            "Controller fault raw code",
+            english["entity"]["binary_sensor"]["system_fault"]["name"],
+            "Controller fault",
         )
         self.assertEqual(
-            english["entity"]["sensor"]["filter_fault_code"]["name"],
-            "Fresh-air filter fault raw code",
+            english["entity"]["binary_sensor"]["filter_fault"]["name"],
+            "Fresh-air filter fault",
         )
+        self.assertNotIn("system_fault_code", english["entity"]["sensor"])
+        self.assertNotIn("filter_fault_code", english["entity"]["sensor"])
         self.assertEqual(english["issues"]["system_fault"]["title"], "Controller fault")
         self.assertEqual(
             english["issues"]["filter_fault"]["title"],
             "Fresh-air filter fault",
         )
+
+    def test_home_assistant_2026_9_is_the_only_supported_baseline(self) -> None:
+        """Distribution metadata and CI must no longer advertise HA 2026.8."""
+        hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertEqual(hacs["homeassistant"], "2026.9.0")
+        self.assertNotIn("0.13.354", workflow)
+        self.assertIn("0.13.363", workflow)
+        self.assertNotIn("2026.8.0", readme)
+        self.assertIn("2026.9.0", readme)
 
     def test_sensor_units_use_current_home_assistant_enums(self) -> None:
         """HA 2026.7+ concentration units must not emit deprecation warnings."""
