@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import struct
@@ -130,6 +131,86 @@ class DecoderTests(unittest.TestCase):
         self.assertEqual(first["additional_anomalies_before_recovery"], 1)
         self.assertEqual(second["recovery"], "next_valid_frame")
         self.assertTrue(second["immediate_recovery"])
+
+
+class ParserWarningPolicyTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _malformed_frame(sequence: int) -> bytes:
+        encoded = protocol.YasHcpFrame(5, 12, sequence, b"x" * 10).encode()
+        declared = struct.unpack_from("<H", encoded, 1)[0] - 1
+        return encoded[:1] + struct.pack("<H", declared) + encoded[3:]
+
+    async def test_immediate_recovery_suppresses_warning(self) -> None:
+        client = protocol.AsyncMoorgenClient(
+            "127.0.0.1",
+            9000,
+            "admin",
+            "secret",
+            parser_recovery_grace=0.01,
+        )
+
+        with patch.object(protocol._LOGGER, "warning") as warning:
+            client._decoder.feed(self._malformed_frame(1))
+            client._update_parser_warning_state()
+            client._decoder.feed(protocol.YasHcpFrame(5, 12, 2, b"ok").encode())
+            client._update_parser_warning_state()
+            await asyncio.sleep(0.03)
+
+        warning.assert_not_called()
+
+    async def test_consecutive_malformed_frames_warn_immediately_once(self) -> None:
+        client = protocol.AsyncMoorgenClient(
+            "127.0.0.1",
+            9000,
+            "admin",
+            "secret",
+            parser_recovery_grace=1,
+        )
+
+        with patch.object(protocol._LOGGER, "warning") as warning:
+            client._decoder.feed(self._malformed_frame(1))
+            client._update_parser_warning_state()
+            client._decoder.feed(self._malformed_frame(2))
+            client._update_parser_warning_state()
+
+        warning.assert_called_once()
+        self.assertEqual(warning.call_args.args[1], "consecutive malformed frames")
+
+    async def test_missing_recovery_warns_after_grace_period(self) -> None:
+        client = protocol.AsyncMoorgenClient(
+            "127.0.0.1",
+            9000,
+            "admin",
+            "secret",
+            parser_recovery_grace=0.01,
+        )
+
+        with patch.object(protocol._LOGGER, "warning") as warning:
+            client._decoder.feed(self._malformed_frame(1))
+            client._update_parser_warning_state()
+            await asyncio.sleep(0.03)
+
+        warning.assert_called_once()
+        self.assertIn("no valid frame within", warning.call_args.args[1])
+
+    async def test_connection_close_before_recovery_warns(self) -> None:
+        client = protocol.AsyncMoorgenClient(
+            "127.0.0.1",
+            9000,
+            "admin",
+            "secret",
+            parser_recovery_grace=1,
+        )
+
+        with patch.object(protocol._LOGGER, "warning") as warning:
+            client._decoder.feed(self._malformed_frame(1))
+            client._update_parser_warning_state()
+            await client.close()
+
+        warning.assert_called_once()
+        self.assertEqual(
+            warning.call_args.args[1], "connection closed before recovery"
+        )
 
 
 class StatusTests(unittest.TestCase):
