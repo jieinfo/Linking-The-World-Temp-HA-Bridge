@@ -149,8 +149,18 @@ class RepositorySurfaceTests(unittest.TestCase):
             issues = document["issues"]
             self.assertEqual(binary_sensors["system_fault"]["name"], "主机故障")
             self.assertEqual(binary_sensors["filter_fault"]["name"], "新风滤网故障")
-            self.assertNotIn("system_fault_code", sensors)
-            self.assertNotIn("filter_fault_code", sensors)
+            self.assertEqual(
+                sensors["system_fault_code"]["name"], "主机故障原始码"
+            )
+            self.assertEqual(
+                sensors["filter_fault_code"]["name"], "新风滤网故障原始码"
+            )
+            self.assertEqual(
+                sensors["system_fault_code"]["state"]["healthy"], "无故障"
+            )
+            self.assertEqual(
+                sensors["filter_fault_code"]["state"]["healthy"], "无故障"
+            )
             self.assertEqual(issues["system_fault"]["title"], "主机故障")
             self.assertEqual(issues["filter_fault"]["title"], "新风滤网故障")
 
@@ -168,8 +178,22 @@ class RepositorySurfaceTests(unittest.TestCase):
             english["entity"]["binary_sensor"]["filter_fault"]["name"],
             "Fresh-air filter fault",
         )
-        self.assertNotIn("system_fault_code", english["entity"]["sensor"])
-        self.assertNotIn("filter_fault_code", english["entity"]["sensor"])
+        self.assertEqual(
+            english["entity"]["sensor"]["system_fault_code"]["name"],
+            "Controller fault raw code",
+        )
+        self.assertEqual(
+            english["entity"]["sensor"]["filter_fault_code"]["name"],
+            "Fresh-air filter fault raw code",
+        )
+        self.assertEqual(
+            english["entity"]["sensor"]["system_fault_code"]["state"]["healthy"],
+            "No fault",
+        )
+        self.assertEqual(
+            english["entity"]["sensor"]["filter_fault_code"]["state"]["healthy"],
+            "No fault",
+        )
         self.assertEqual(english["issues"]["system_fault"]["title"], "Controller fault")
         self.assertEqual(
             english["issues"]["filter_fault"]["title"],

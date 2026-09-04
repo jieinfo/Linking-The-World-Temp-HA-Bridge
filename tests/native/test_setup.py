@@ -173,10 +173,10 @@ async def test_setup_removes_legacy_energy_sensor_and_experimental_option(
     ) is not None
 
 
-async def test_setup_removes_legacy_fault_code_sensors(
+async def test_setup_preserves_restored_fault_code_sensor_identity(
     hass, mock_config_entry, fake_controller
 ):
-    """Upgrading removes retired raw-code entities without touching Repairs."""
+    """Restored raw-code entities retain their original registry identities."""
     mock_config_entry.add_to_hass(hass)
     registry = er.async_get(hass)
     legacy_entities = [
@@ -192,7 +192,13 @@ async def test_setup_removes_legacy_fault_code_sensors(
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert all(registry.async_get(entity.entity_id) is None for entity in legacy_entities)
+    assert all(registry.async_get(entity.entity_id) is not None for entity in legacy_entities)
+    assert {
+        registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{mock_config_entry.entry_id}_{key}"
+        )
+        for key in ("system_fault_code", "filter_fault_code")
+    } == {entity.entity_id for entity in legacy_entities}
     assert registry.async_get_entity_id(
         "binary_sensor", DOMAIN, f"{mock_config_entry.entry_id}_system_fault"
     ) is not None

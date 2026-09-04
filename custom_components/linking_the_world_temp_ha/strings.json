@@ -183,7 +183,15 @@
       "system_temperature": {"name": "温度"},
       "system_humidity": {"name": "湿度"},
       "system_pm25": {"name": "PM2.5"},
-      "system_co2": {"name": "CO₂"}
+      "system_co2": {"name": "CO₂"},
+      "system_fault_code": {
+        "name": "主机故障原始码",
+        "state": {"healthy": "无故障"}
+      },
+      "filter_fault_code": {
+        "name": "新风滤网故障原始码",
+        "state": {"healthy": "无故障"}
+      }
     },
     "switch": {
       "system_power": {"name": "总开关"},

@@ -654,6 +654,9 @@ async def test_full_system_status_exposes_environment_and_problem_entities(
     for key in ("system_fault", "filter_fault"):
         entity_id = _entity_id(hass, hub.entry.entry_id, "binary_sensor", key)
         assert hass.states.get(entity_id).state == "unavailable"
+    for key in ("system_fault_code", "filter_fault_code"):
+        entity_id = _entity_id(hass, hub.entry.entry_id, "sensor", key)
+        assert hass.states.get(entity_id).state == "unavailable"
 
     await fake_controller.async_send_status(
         _system_status(
@@ -677,6 +680,8 @@ async def test_full_system_status_exposes_environment_and_problem_entities(
         ("sensor", "system_humidity"): "65",
         ("sensor", "system_pm25"): "12.3",
         ("sensor", "system_co2"): "700",
+        ("sensor", "system_fault_code"): "42",
+        ("sensor", "filter_fault_code"): "7",
         ("binary_sensor", "system_fault"): "on",
         ("binary_sensor", "filter_fault"): "on",
     }
@@ -686,13 +691,7 @@ async def test_full_system_status_exposes_environment_and_problem_entities(
         assert state.state == expected
         if platform == "binary_sensor":
             assert state.attributes["device_class"] == "problem"
-            assert state.attributes["raw_code"] == (42 if key == "system_fault" else 7)
-    assert er.async_get(hass).async_get_entity_id(
-        "sensor", DOMAIN, f"{hub.entry.entry_id}_system_fault_code"
-    ) is None
-    assert er.async_get(hass).async_get_entity_id(
-        "sensor", DOMAIN, f"{hub.entry.entry_id}_filter_fault_code"
-    ) is None
+            assert "raw_code" not in state.attributes
     assert ir.async_get(hass).async_get_issue(
         DOMAIN, f"system_fault_{hub.entry.entry_id}"
     ) is not None
@@ -714,7 +713,10 @@ async def test_full_system_status_exposes_environment_and_problem_entities(
         entity_id = _entity_id(hass, hub.entry.entry_id, "binary_sensor", key)
         state = hass.states.get(entity_id)
         assert state.state == "off"
-        assert state.attributes["raw_code"] == 0
+        assert "raw_code" not in state.attributes
+    for key in ("system_fault_code", "filter_fault_code"):
+        entity_id = _entity_id(hass, hub.entry.entry_id, "sensor", key)
+        assert hass.states.get(entity_id).state == "healthy"
     assert ir.async_get(hass).async_get_issue(
         DOMAIN, f"system_fault_{hub.entry.entry_id}"
     ) is None
