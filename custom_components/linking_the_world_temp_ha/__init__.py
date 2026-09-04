@@ -16,7 +16,6 @@ from .runtime import LinkingTempConfigEntry, LinkingTempRuntime
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_ENERGY_OPTION = "enable_experimental_energy_control"
-_LEGACY_FAULT_CODE_KEYS = ("system_fault_code", "filter_fault_code")
 
 
 def _register_controller_device(
@@ -50,25 +49,11 @@ def _remove_legacy_energy_artifacts(
         registry.async_remove(entity_id)
 
 
-def _remove_legacy_fault_code_entities(
-    hass: HomeAssistant, entry: LinkingTempConfigEntry
-) -> None:
-    """Remove raw-code sensors replaced by user-facing problem entities."""
-    registry = er.async_get(hass)
-    for key in _LEGACY_FAULT_CODE_KEYS:
-        entity_id = registry.async_get_entity_id(
-            "sensor", DOMAIN, f"{entry.entry_id}_{key}"
-        )
-        if entity_id is not None:
-            registry.async_remove(entity_id)
-
-
 async def async_setup_entry(
     hass: HomeAssistant, entry: LinkingTempConfigEntry
 ) -> bool:
     """Set up one MC7021 controller."""
     _remove_legacy_energy_artifacts(hass, entry)
-    _remove_legacy_fault_code_entities(hass, entry)
     health = HealthTracker()
     hub = LinkingTempHub(hass, entry, health)
     runtime = LinkingTempRuntime(

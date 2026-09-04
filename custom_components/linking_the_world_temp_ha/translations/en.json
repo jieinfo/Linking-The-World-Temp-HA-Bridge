@@ -182,7 +182,15 @@
       "system_temperature": {"name": "Temperature"},
       "system_humidity": {"name": "Humidity"},
       "system_pm25": {"name": "PM2.5"},
-      "system_co2": {"name": "CO₂"}
+      "system_co2": {"name": "CO₂"},
+      "system_fault_code": {
+        "name": "Controller fault raw code",
+        "state": {"healthy": "No fault"}
+      },
+      "filter_fault_code": {
+        "name": "Fresh-air filter fault raw code",
+        "state": {"healthy": "No fault"}
+      }
     },
     "switch": {
       "system_power": {"name": "System power"},

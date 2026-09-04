@@ -1,5 +1,15 @@
 # Linking The World Temp HA changelog
 
+## 1.3.1 - Clear fault status and raw-code diagnostics
+
+- 恢复“主机故障原始码”和“新风滤网故障原始码”两个独立诊断传感器：`0` 显示“无故障”，
+  非零显示主机上报的具体整数，并沿用原 unique ID，避免改变既有实体标识。
+- “主机故障”和“新风滤网故障”继续作为 Home Assistant `problem` 二进制传感器服务于安全
+  面板活动警报；移除其重复的 `raw_code` 属性，使日常故障状态与技术诊断各司其职。
+- 尚未收到有效总控状态或主机断开时，四个故障相关实体统一显示不可用；已有 Repair 不会
+  因断线清除，仍需主机重新上报原始码 `0` 才会恢复。
+- 保留严重 Repairs、故障码变化时的去重错误日志、恢复日志和诊断导出，不改变控制链路。
+
 ## 1.3.0 - Home Assistant 2026.9 active fault alerts
 
 - 将“主机故障”和“新风滤网故障”改为 Home Assistant `problem` 类型二进制传感器：原始码

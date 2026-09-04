@@ -72,11 +72,6 @@ class ControllerFaultSensor(LinkingTempEntity, BinarySensorEntity):
     def available(self) -> bool:
         return super().available and self.raw_code is not None
 
-    @property
-    def extra_state_attributes(self) -> dict[str, int | None]:
-        return {"raw_code": self.raw_code}
-
-
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
