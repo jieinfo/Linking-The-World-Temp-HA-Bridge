@@ -125,8 +125,8 @@
     "binary_sensor": {
       "controller_connection": {"name": "Controller connection"},
       "protocol_verified": {"name": "Protocol compatible"},
-      "system_fault": {"name": "Controller fault"},
-      "filter_fault": {"name": "Fresh-air filter fault"}
+      "system_fault": {"name": "Controller fault status"},
+      "filter_fault": {"name": "Fresh-air filter fault status"}
     },
     "climate": {"room_thermostat": {"name": "Thermostat"}},
     "select": {

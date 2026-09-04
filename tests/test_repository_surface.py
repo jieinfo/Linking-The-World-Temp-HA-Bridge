@@ -147,8 +147,12 @@ class RepositorySurfaceTests(unittest.TestCase):
             binary_sensors = document["entity"]["binary_sensor"]
             sensors = document["entity"]["sensor"]
             issues = document["issues"]
-            self.assertEqual(binary_sensors["system_fault"]["name"], "主机故障")
-            self.assertEqual(binary_sensors["filter_fault"]["name"], "新风滤网故障")
+            self.assertEqual(
+                binary_sensors["system_fault"]["name"], "主机故障状态"
+            )
+            self.assertEqual(
+                binary_sensors["filter_fault"]["name"], "新风滤网故障状态"
+            )
             self.assertEqual(
                 sensors["system_fault_code"]["name"], "主机故障原始码"
             )
@@ -172,11 +176,11 @@ class RepositorySurfaceTests(unittest.TestCase):
         )
         self.assertEqual(
             english["entity"]["binary_sensor"]["system_fault"]["name"],
-            "Controller fault",
+            "Controller fault status",
         )
         self.assertEqual(
             english["entity"]["binary_sensor"]["filter_fault"]["name"],
-            "Fresh-air filter fault",
+            "Fresh-air filter fault status",
         )
         self.assertEqual(
             english["entity"]["sensor"]["system_fault_code"]["name"],

@@ -1,5 +1,12 @@
 # Linking The World Temp HA changelog
 
+## 1.3.2 - Unambiguous fault status names
+
+- 将两个 Home Assistant `problem` 二进制传感器更名为“主机故障状态”和“新风滤网故障
+  状态”，避免设备页中的“主机故障：正常”等表述产生歧义。
+- 保持实体 unique ID、故障判断、活动警报、Repairs、日志和两个原始故障码诊断传感器不变，
+  现有自动化及安全面板配置无需重新建立。
+
 ## 1.3.1 - Clear fault status and raw-code diagnostics
 
 - 恢复“主机故障原始码”和“新风滤网故障原始码”两个独立诊断传感器：`0` 显示“无故障”，

@@ -124,8 +124,8 @@
     "binary_sensor": {
       "controller_connection": {"name": "主机连接"},
       "protocol_verified": {"name": "协议兼容"},
-      "system_fault": {"name": "主机故障"},
-      "filter_fault": {"name": "新风滤网故障"}
+      "system_fault": {"name": "主机故障状态"},
+      "filter_fault": {"name": "新风滤网故障状态"}
     },
     "climate": {
       "room_thermostat": {"name": "温控"}

@@ -1,6 +1,6 @@
 # Linking The World Temp HA 故障排查
 
-本文适用于 HACS 集成 **Linking The World Temp HA 1.3.1**，最低支持
+本文适用于 HACS 集成 **Linking The World Temp HA 1.3.2**，最低支持
 Home Assistant `2026.9.0`。
 
 ## 开始前
@@ -29,7 +29,8 @@ Home Assistant `2026.9.0`。
 ## 总控环境与故障状态
 
 集成使用已验证的 14 字节总控状态布局提供节能控制回报、温湿度、PM2.5、CO2、
-主机故障码和新风滤网故障码。两个故障实体均为 Home Assistant“问题”类型：
+主机故障码和新风滤网故障码。“主机故障状态”和“新风滤网故障状态”均为 Home Assistant
+“问题”类型：
 
 - 正常：原始码为 `0`，当前有效状态报文没有报告该类故障；
 - 检测到问题：原始码非零，同时创建 `ERROR` 级 Home Assistant Repair，交由设备技术资料或
