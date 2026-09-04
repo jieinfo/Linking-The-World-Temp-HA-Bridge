@@ -20,6 +20,7 @@ VERSION = 1
 TRAILER = b"#"
 MAX_PAYLOAD_LENGTH = 16_384
 PARSER_ANOMALY_LIMIT = 8
+PARSER_RECOVERY_GRACE = 5.0
 CONNECT_TIMEOUT = 8
 HELLO_TIMEOUT = 8
 LOGIN_TIMEOUT = 8
@@ -207,9 +208,6 @@ class YasHcpDecoder:
                 return output
             payload_length = struct.unpack_from("<H", self._buffer, 1)[0]
             if payload_length > MAX_PAYLOAD_LENGTH:
-                _LOGGER.warning(
-                    "Discarded YAS HCP frame with excessive length: %d", payload_length
-                )
                 self._record_parser_anomaly(
                     reason="outer_length_exceeds_limit",
                     outer_length=payload_length,
@@ -230,9 +228,6 @@ class YasHcpDecoder:
                 or not raw.endswith(TRAILER)
                 or len(raw) < len(MAGIC) + 8
             ):
-                _LOGGER.warning(
-                    "Discarded malformed YAS HCP payload (%d bytes)", len(raw)
-                )
                 self._record_parser_anomaly(
                     reason="invalid_envelope",
                     outer_length=payload_length,
@@ -243,9 +238,6 @@ class YasHcpDecoder:
             body_length = struct.unpack_from("<H", raw, len(MAGIC) + 5)[0]
             expected_length = len(MAGIC) + 7 + body_length + len(TRAILER)
             if len(raw) != expected_length:
-                _LOGGER.warning(
-                    "Discarded YAS HCP payload with invalid length (%d bytes)", len(raw)
-                )
                 self._record_parser_anomaly(
                     reason="body_length_mismatch",
                     outer_length=payload_length,
@@ -443,6 +435,8 @@ class AsyncMoorgenClient:
         username: str,
         password: str,
         client_id: str = DEFAULT_CLIENT_ID,
+        *,
+        parser_recovery_grace: float = PARSER_RECOVERY_GRACE,
     ) -> None:
         if len(client_id) != 16 or any(
             char not in "0123456789abcdefABCDEF" for char in client_id
@@ -453,6 +447,7 @@ class AsyncMoorgenClient:
         self.username = username
         self.password = password
         self.client_id = client_id.lower()
+        self._parser_recovery_grace = parser_recovery_grace
         self.on_frame: FrameCallback | None = None
         self.on_status: StatusCallback | None = None
         self.on_stage: StageCallback | None = None
@@ -460,6 +455,8 @@ class AsyncMoorgenClient:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._parser_warning_task: asyncio.Task[None] | None = None
+        self._warned_parser_anomalies: set[str] = set()
         self._decoder = YasHcpDecoder()
         self._inbox: asyncio.Queue[YasHcpFrame | None] = asyncio.Queue()
         self._write_lock = asyncio.Lock()
@@ -507,6 +504,8 @@ class AsyncMoorgenClient:
             self.last_received_at = time.monotonic()
             self.reader_error = None
             self._decoder = YasHcpDecoder()
+            self._cancel_parser_warning_task()
+            self._warned_parser_anomalies.clear()
             self._inbox = asyncio.Queue()
             self._reader_task = asyncio.create_task(
                 self._read_loop(self._inbox), name="linking-temp-mc7021-reader"
@@ -568,6 +567,11 @@ class AsyncMoorgenClient:
                 await task
             except asyncio.CancelledError:
                 pass
+        self._flush_pending_parser_warning("connection closed before recovery")
+        warning_task = self._parser_warning_task
+        self._cancel_parser_warning_task()
+        if warning_task is not None and warning_task is not asyncio.current_task():
+            await asyncio.gather(warning_task, return_exceptions=True)
         if self._writer is not None:
             self._writer.close()
             try:
@@ -638,6 +642,100 @@ class AsyncMoorgenClient:
                 result = self.on_parser_event(name, change, parser_anomalies)
                 if result is not None:
                     await result
+
+    def _pending_parser_anomalies(self) -> list[dict[str, object]]:
+        """Return anomalies that have not yet been followed by a valid frame."""
+        return [
+            anomaly
+            for anomaly in self._decoder.parser_anomalies
+            if anomaly["recovery"] == "pending"
+        ]
+
+    def _cancel_parser_warning_task(self) -> None:
+        """Cancel a deferred parser warning after the stream has recovered."""
+        task = self._parser_warning_task
+        self._parser_warning_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    def _warn_parser_anomalies(
+        self, anomalies: list[dict[str, object]], circumstance: str
+    ) -> None:
+        """Warn once for one unresolved burst without retaining payload bytes."""
+        unwarned = [
+            anomaly
+            for anomaly in anomalies
+            if str(anomaly["timestamp"]) not in self._warned_parser_anomalies
+        ]
+        if not unwarned:
+            return
+        first = unwarned[0]
+        _LOGGER.warning(
+            "MC7021 parser anomaly did not recover normally: %s; "
+            "count=%d reason=%s outer_length=%s kind=%s opcode=%s sequence=%s",
+            circumstance,
+            len(anomalies),
+            first["reason"],
+            first["outer_length_declared"],
+            first["kind"],
+            first["opcode"],
+            first["sequence"],
+        )
+        self._warned_parser_anomalies.update(
+            str(anomaly["timestamp"]) for anomaly in anomalies
+        )
+
+    async def _warn_if_parser_not_recovered(self, timestamp: str) -> None:
+        """Promote one still-pending anomaly after the recovery grace period."""
+        try:
+            await asyncio.sleep(self._parser_recovery_grace)
+            pending = self._pending_parser_anomalies()
+            if any(str(anomaly["timestamp"]) == timestamp for anomaly in pending):
+                self._warn_parser_anomalies(
+                    pending,
+                    f"no valid frame within {self._parser_recovery_grace:g}s",
+                )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._parser_warning_task is asyncio.current_task():
+                self._parser_warning_task = None
+
+    def _update_parser_warning_state(self) -> None:
+        """Apply the deferred warning policy after each decoder pass."""
+        anomalies = self._decoder.parser_anomalies
+        self._warned_parser_anomalies.intersection_update(
+            str(anomaly["timestamp"]) for anomaly in anomalies
+        )
+        pending = [
+            anomaly for anomaly in anomalies if anomaly["recovery"] == "pending"
+        ]
+        if not pending:
+            self._cancel_parser_warning_task()
+            return
+
+        if any(
+            int(anomaly["additional_anomalies_before_recovery"]) > 0
+            for anomaly in pending
+        ):
+            self._cancel_parser_warning_task()
+            self._warn_parser_anomalies(pending, "consecutive malformed frames")
+            return
+
+        timestamp = str(pending[0]["timestamp"])
+        if timestamp in self._warned_parser_anomalies:
+            return
+        if self._parser_warning_task is None or self._parser_warning_task.done():
+            self._parser_warning_task = asyncio.create_task(
+                self._warn_if_parser_not_recovered(timestamp),
+                name="linking-temp-parser-recovery-watch",
+            )
+
+    def _flush_pending_parser_warning(self, circumstance: str) -> None:
+        """Surface an anomaly when the transport ends before parser recovery."""
+        pending = self._pending_parser_anomalies()
+        if pending:
+            self._warn_parser_anomalies(pending, circumstance)
 
     async def _send_login(self) -> None:
         await self._send(
@@ -724,6 +822,7 @@ class AsyncMoorgenClient:
                     self._decoder.bytes_discarded,
                 )
                 frames = self._decoder.feed(data)
+                self._update_parser_warning_state()
                 await self._emit_parser_changes(before)
                 for frame in frames:
                     inbox.put_nowait(frame)
@@ -753,5 +852,7 @@ class AsyncMoorgenClient:
         except Exception as error:  # noqa: BLE001 - preserve any reader failure for reconnect diagnostics.
             self.reader_error = error
         finally:
+            self._flush_pending_parser_warning("connection closed before recovery")
+            self._cancel_parser_warning_task()
             self._ready = False
             inbox.put_nowait(None)
