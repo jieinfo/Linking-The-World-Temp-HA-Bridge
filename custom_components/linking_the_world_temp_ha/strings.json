@@ -123,7 +123,9 @@
   "entity": {
     "binary_sensor": {
       "controller_connection": {"name": "主机连接"},
-      "protocol_verified": {"name": "协议兼容"}
+      "protocol_verified": {"name": "协议兼容"},
+      "system_fault": {"name": "主机故障"},
+      "filter_fault": {"name": "新风滤网故障"}
     },
     "climate": {
       "room_thermostat": {"name": "温控"}
@@ -181,9 +183,7 @@
       "system_temperature": {"name": "温度"},
       "system_humidity": {"name": "湿度"},
       "system_pm25": {"name": "PM2.5"},
-      "system_co2": {"name": "CO₂"},
-      "system_fault_code": {"name": "主机故障原始码"},
-      "filter_fault_code": {"name": "新风滤网故障原始码"}
+      "system_co2": {"name": "CO₂"}
     },
     "switch": {
       "system_power": {"name": "总开关"},

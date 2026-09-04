@@ -646,11 +646,15 @@ async def test_system_mode_scene_and_humidifier_follow_controller_push_state(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
-async def test_full_system_status_exposes_read_only_environment_and_fault_entities(
+async def test_full_system_status_exposes_environment_and_problem_entities(
     hass, setup_integration, fake_controller
 ) -> None:
     """One controller push updates every verified 14-byte read-only field."""
     hub = setup_integration.hub
+    for key in ("system_fault", "filter_fault"):
+        entity_id = _entity_id(hass, hub.entry.entry_id, "binary_sensor", key)
+        assert hass.states.get(entity_id).state == "unavailable"
+
     await fake_controller.async_send_status(
         _system_status(
             hub,
@@ -673,12 +677,22 @@ async def test_full_system_status_exposes_read_only_environment_and_fault_entiti
         ("sensor", "system_humidity"): "65",
         ("sensor", "system_pm25"): "12.3",
         ("sensor", "system_co2"): "700",
-        ("sensor", "system_fault_code"): "42",
-        ("sensor", "filter_fault_code"): "7",
+        ("binary_sensor", "system_fault"): "on",
+        ("binary_sensor", "filter_fault"): "on",
     }
     for (platform, key), expected in expected_states.items():
         entity_id = _entity_id(hass, hub.entry.entry_id, platform, key)
-        assert hass.states.get(entity_id).state == expected
+        state = hass.states.get(entity_id)
+        assert state.state == expected
+        if platform == "binary_sensor":
+            assert state.attributes["device_class"] == "problem"
+            assert state.attributes["raw_code"] == (42 if key == "system_fault" else 7)
+    assert er.async_get(hass).async_get_entity_id(
+        "sensor", DOMAIN, f"{hub.entry.entry_id}_system_fault_code"
+    ) is None
+    assert er.async_get(hass).async_get_entity_id(
+        "sensor", DOMAIN, f"{hub.entry.entry_id}_filter_fault_code"
+    ) is None
     assert ir.async_get(hass).async_get_issue(
         DOMAIN, f"system_fault_{hub.entry.entry_id}"
     ) is not None
@@ -696,9 +710,11 @@ async def test_full_system_status_exposes_read_only_environment_and_fault_entiti
     )
     await _wait_for(lambda: hub.state.filter_fault_code == 0)
     await hass.async_block_till_done()
-    for key in ("system_fault_code", "filter_fault_code"):
-        entity_id = _entity_id(hass, hub.entry.entry_id, "sensor", key)
-        assert hass.states.get(entity_id).state == "无故障"
+    for key in ("system_fault", "filter_fault"):
+        entity_id = _entity_id(hass, hub.entry.entry_id, "binary_sensor", key)
+        state = hass.states.get(entity_id)
+        assert state.state == "off"
+        assert state.attributes["raw_code"] == 0
     assert ir.async_get(hass).async_get_issue(
         DOMAIN, f"system_fault_{hub.entry.entry_id}"
     ) is None
