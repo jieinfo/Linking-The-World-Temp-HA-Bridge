@@ -7,6 +7,20 @@ on:
   pull_request:
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install static analysis tools
+        run: python -m pip install ruff==0.13.3 mypy==1.18.2
+      - name: Run Ruff
+        run: ruff check custom_components tests scripts
+      - name: Run mypy
+        run: mypy custom_components/linking_the_world_temp_ha
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -33,7 +47,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pytest_ha: ['0.13.363']
+        include:
+          - name: minimum
+            pytest_ha: pytest-homeassistant-custom-component==0.13.363
+          - name: latest
+            pytest_ha: pytest-homeassistant-custom-component
+    name: Native tests (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,7 +60,7 @@ jobs:
           python-version: '3.14'
       - name: Install native test dependencies
         run: |
-          python -m pip install pytest-cov==7.1.0 pytest-homeassistant-custom-component==${{ matrix.pytest_ha }}
+          python -m pip install pytest-cov==7.1.0 "${{ matrix.pytest_ha }}"
       - name: Fresh Home Assistant install and reload smoke test
         run: pytest -q tests/native/test_setup.py tests/native/test_config_flow.py
       - name: Run native integration tests

@@ -7,6 +7,7 @@ import logging
 
 import pytest
 
+from custom_components.linking_the_world_temp_ha.health import HealthTracker
 from custom_components.linking_the_world_temp_ha.protocol import (
     AsyncMoorgenClient,
     AuthenticationRejected,
@@ -19,13 +20,11 @@ from custom_components.linking_the_world_temp_ha.protocol import (
     YasHcpFrame,
     tlv,
 )
-from custom_components.linking_the_world_temp_ha.health import HealthTracker
 from custom_components.linking_the_world_temp_ha.runtime import (
     ConnectionStage,
     FailureKind,
 )
 from tests.helpers import FakeControllerBehavior, FakeMC7021Server
-
 
 pytestmark = pytest.mark.usefixtures("socket_enabled")
 

@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 
 from .const import DEFAULT_CLIENT_ID, MODE_VALUES, SCENE_VALUES
 
@@ -122,7 +123,7 @@ class YasHcpDecoder:
         for anomaly in self._parser_anomalies:
             if anomaly["recovery"] == "pending":
                 anomaly["additional_anomalies_before_recovery"] = (
-                    int(anomaly["additional_anomalies_before_recovery"]) + 1
+                    cast(int, anomaly["additional_anomalies_before_recovery"]) + 1
                 )
 
         magic_header_valid = raw is not None and raw.startswith(MAGIC)
@@ -151,11 +152,19 @@ class YasHcpDecoder:
                 "payload_length_expected": expected_length,
                 "magic_header_valid": magic_header_valid,
                 "trailer_present": raw.endswith(TRAILER) if raw is not None else None,
-                "kind": raw[len(MAGIC) + 1] if header_available else None,
-                "opcode": raw[len(MAGIC) + 2] if header_available else None,
+                "kind": (
+                    raw[len(MAGIC) + 1]
+                    if raw is not None and header_available
+                    else None
+                ),
+                "opcode": (
+                    raw[len(MAGIC) + 2]
+                    if raw is not None and header_available
+                    else None
+                ),
                 "sequence": (
                     struct.unpack_from("<H", raw, len(MAGIC) + 3)[0]
-                    if header_available
+                    if raw is not None and header_available
                     else None
                 ),
                 "recovery": "pending",
@@ -172,7 +181,7 @@ class YasHcpDecoder:
         for anomaly in self._parser_anomalies:
             if anomaly["recovery"] != "pending":
                 continue
-            additional = int(anomaly["additional_anomalies_before_recovery"])
+            additional = cast(int, anomaly["additional_anomalies_before_recovery"])
             anomaly["recovery"] = (
                 "next_valid_frame" if additional == 0 else "after_additional_anomalies"
             )
@@ -405,6 +414,7 @@ def decode_thermostat_status(
         or not power
     ):
         return None
+    assert mac is not None and packed is not None and power is not None
     return ThermostatState(
         mac=mac,
         room_id=decode_text(fields.get(0x0030, b"")),
@@ -715,7 +725,7 @@ class AsyncMoorgenClient:
             return
 
         if any(
-            int(anomaly["additional_anomalies_before_recovery"]) > 0
+            cast(int, anomaly["additional_anomalies_before_recovery"]) > 0
             for anomaly in pending
         ):
             self._cancel_parser_warning_task()

@@ -56,7 +56,8 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
             self.hub.state.power, self.hub.state.mode
         ):
             return [HVACMode.OFF]
-        active_mode = MODE_TO_HVAC.get(self.hub.state.mode)
+        mode = self.hub.state.mode
+        active_mode = MODE_TO_HVAC.get(mode) if mode is not None else None
         return [HVACMode.OFF] + ([active_mode] if active_mode is not None else [])
 
     @property
@@ -66,7 +67,8 @@ class RoomThermostat(LinkingThermostatEntity, ClimateEntity):
             self.hub.state.power, self.hub.state.mode
         ):
             return HVACMode.OFF
-        return MODE_TO_HVAC[self.hub.state.mode]
+        mode = self.hub.state.mode
+        return MODE_TO_HVAC[mode] if mode is not None else HVACMode.OFF
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         await self.hub.async_set_thermostat_power(

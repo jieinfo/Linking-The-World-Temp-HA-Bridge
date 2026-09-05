@@ -312,13 +312,13 @@ async def async_create_fix_flow(
     data: dict[str, str | int | float | None] | None,
 ) -> RepairsFlow:
     """Create the entry-linked fix flow for a known connection issue."""
-    if data is None or not isinstance(data.get("entry_id"), str):
+    if data is None or not isinstance(entry_id := data.get("entry_id"), str):
         raise ValueError("Connection repair is missing its config entry")
     if issue_id.startswith("stale_panel_"):
         mac_hex = data.get("mac_hex")
         if not isinstance(mac_hex, str):
             raise ValueError("Stale-panel repair is missing its panel identity")
-        return StalePanelRepairFlow(data["entry_id"], mac_hex, issue_id)
+        return StalePanelRepairFlow(entry_id, mac_hex, issue_id)
     if not issue_id.startswith(("login_timeout_", "protocol_incompatible_")):
         raise ValueError(f"Unsupported connection repair: {issue_id}")
-    return ConnectionRepairFlow(data["entry_id"], issue_id)
+    return ConnectionRepairFlow(entry_id, issue_id)

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
+import custom_components.linking_the_world_temp_ha.hub as hub_module
 from custom_components.linking_the_world_temp_ha.binary_sensor import (
     ControllerConnectionSensor,
     ProtocolVerifiedSensor,
@@ -19,11 +20,10 @@ from custom_components.linking_the_world_temp_ha.diagnostics import (
     build_anonymous_panel_map,
 )
 from custom_components.linking_the_world_temp_ha.health import HealthTracker
-import custom_components.linking_the_world_temp_ha.hub as hub_module
 from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
-from custom_components.linking_the_world_temp_ha.protocol import ThermostatState
 from custom_components.linking_the_world_temp_ha.protocol import (
     TcpConnectError,
+    ThermostatState,
     tlv,
 )
 from custom_components.linking_the_world_temp_ha.runtime import (

@@ -25,7 +25,8 @@ class SystemModeSelect(LinkingTempEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        return MODE_LABELS.get(self.hub.state.mode)
+        mode = self.hub.state.mode
+        return MODE_LABELS.get(mode) if mode is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, str | bool]:
@@ -55,7 +56,8 @@ class SystemSceneSelect(LinkingTempEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        return SCENE_LABELS.get(self.hub.state.scene)
+        scene = self.hub.state.scene
+        return SCENE_LABELS.get(scene) if scene is not None else None
 
     async def async_select_option(self, option: str) -> None:
         await self.hub.async_set_scene(SCENE_BY_LABEL[option])

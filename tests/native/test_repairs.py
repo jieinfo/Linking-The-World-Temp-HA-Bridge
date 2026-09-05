@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -18,10 +18,8 @@ from custom_components.linking_the_world_temp_ha.const import DOMAIN
 from custom_components.linking_the_world_temp_ha.diagnostics import (
     async_get_config_entry_diagnostics,
 )
-from custom_components.linking_the_world_temp_ha.repairs import (
-    RepairManager,
-    async_create_fix_flow,
-)
+from custom_components.linking_the_world_temp_ha.health import HealthTracker
+from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from custom_components.linking_the_world_temp_ha.panel_registry import (
     STALE_PANEL_SECONDS,
     PanelRecord,
@@ -32,8 +30,10 @@ from custom_components.linking_the_world_temp_ha.protocol import (
     TcpConnectError,
     ThermostatState,
 )
-from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
-from custom_components.linking_the_world_temp_ha.health import HealthTracker
+from custom_components.linking_the_world_temp_ha.repairs import (
+    RepairManager,
+    async_create_fix_flow,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
@@ -582,8 +582,6 @@ async def test_tcp_failure_does_not_create_connection_repairs(
     hass, mock_config_entry
 ) -> None:
     """Network failures remain reconnect/diagnostic events, not credential Repairs."""
-    manager = RepairManager(hass, mock_config_entry)
-
     assert _issue(hass, f"login_timeout_{mock_config_entry.entry_id}") is None
     assert _issue(hass, f"protocol_incompatible_{mock_config_entry.entry_id}") is None
 

@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -45,6 +46,8 @@ from .const import (
     THERMOSTAT_MAX_TEMPERATURE,
     THERMOSTAT_MIN_TEMPERATURE,
 )
+from .health import HealthTracker
+from .panel_registry import STALE_PANEL_SECONDS, PanelRegistry
 from .protocol import (
     COMMAND_ENERGY_SWITCH,
     COMMAND_MODE,
@@ -58,9 +61,8 @@ from .protocol import (
     HandshakeTimeout,
     IncompatibleProtocol,
     LoginTimeout,
-    MoorgenConnectionError,
-    TechSystemState,
     TcpConnectError,
+    TechSystemState,
     ThermostatState,
     YasHcpFrame,
     decode_tech_system_status,
@@ -71,10 +73,8 @@ from .protocol import (
     parse_device_mac,
     preserve_valid_thermostat_measurements,
 )
-from .health import HealthTracker
-from .panel_registry import STALE_PANEL_SECONDS, PanelRegistry
-from .runtime import ConnectionStage, FailureKind
 from .repairs import RepairManager
+from .runtime import ConnectionStage, FailureKind
 from .thermostat_policy import room_thermostat_block_reason
 
 _LOGGER = logging.getLogger(__name__)
@@ -1168,12 +1168,10 @@ class LinkingTempHub:
                 if getattr(self.state, name) != value:
                     setattr(self.state, name, value)
                     changed = True
-            self.repairs.set_fault_code(
-                "system", self.state.system_fault_code
-            )
-            self.repairs.set_fault_code(
-                "filter", self.state.filter_fault_code
-            )
+            if self.state.system_fault_code is not None:
+                self.repairs.set_fault_code("system", self.state.system_fault_code)
+            if self.state.filter_fault_code is not None:
+                self.repairs.set_fault_code("filter", self.state.filter_fault_code)
             self._confirm_pending(
                 "system",
                 {

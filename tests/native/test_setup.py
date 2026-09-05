@@ -16,6 +16,8 @@ from custom_components.linking_the_world_temp_ha.binary_sensor import (
     ControllerConnectionSensor,
 )
 from custom_components.linking_the_world_temp_ha.const import DOMAIN
+from custom_components.linking_the_world_temp_ha.health import HealthTracker
+from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from custom_components.linking_the_world_temp_ha.protocol import (
     AsyncMoorgenClient,
     YasHcpDecoder,
@@ -26,8 +28,6 @@ from custom_components.linking_the_world_temp_ha.runtime import (
     ConnectionStage,
     LinkingTempRuntime,
 )
-from custom_components.linking_the_world_temp_ha.health import HealthTracker
-from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
 from tests.helpers import FakeControllerBehavior, FakeMC7021Server
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -733,11 +733,17 @@ async def test_unload_closes_background_tasks(
     await fake_controller.async_stop()
 
 
-async def test_remove_unloads_workers_and_clears_entry_repairs(
-    hass, setup_integration, mock_config_entry, fake_controller
+async def test_remove_unloads_workers_and_clears_entry_repairs_and_panel_storage(
+    hass, hass_storage, setup_integration, mock_config_entry, fake_controller
 ):
-    """Normal HA removal unloads once and clears all entry-linked Repairs."""
+    """Permanent removal clears entry-linked Repairs and private panel storage."""
     runtime = setup_integration
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_thermostat_status(runtime.hub, mac_hex))
+    await _wait_for(lambda: mac_hex in runtime.hub.thermostats)
+    await runtime.panel_registry.async_flush()
+    storage_key = f"{DOMAIN}.{mock_config_entry.entry_id}.panels"
+    assert storage_key in hass_storage
     await runtime.hub.repairs.async_set_protocol_incompatible(True)
     issue_id = f"protocol_incompatible_{mock_config_entry.entry_id}"
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
@@ -748,5 +754,6 @@ async def test_remove_unloads_workers_and_clears_entry_repairs(
     await hass.async_block_till_done()
     assert runtime.hub._runner is None
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    assert storage_key not in hass_storage
     assert not _integration_tasks()
     await fake_controller.async_stop()
