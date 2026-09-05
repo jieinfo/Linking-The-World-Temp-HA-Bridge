@@ -399,7 +399,7 @@ def decode_thermostat_status(
     packed = fields.get(0x000A)
     power = fields.get(0x000B)
     if (
-        not mac
+        len(mac or b"") != 8
         or fields.get(0x0075) != tech_system_mac
         or len(packed or b"") != 5
         or not power
@@ -825,7 +825,8 @@ class AsyncMoorgenClient:
                 self._update_parser_warning_state()
                 await self._emit_parser_changes(before)
                 for frame in frames:
-                    inbox.put_nowait(frame)
+                    if frame.kind in (1, 2):
+                        inbox.put_nowait(frame)
                 for frame in frames:
                     _LOGGER.debug(
                         "Received MC7021 kind=%02x opcode=%02x seq=%d body_length=%d",

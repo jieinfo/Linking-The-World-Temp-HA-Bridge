@@ -319,6 +319,20 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(state.humidity, 63)
         self.assertEqual(state.power, "ON")
 
+    def test_room_panel_status_rejects_non_eight_byte_mac(self) -> None:
+        total_mac = bytes.fromhex("ff00ffffffff00ff")
+        for panel_mac in (b"\x01", bytes.fromhex("ff00ffffffff01ff00")):
+            with self.subTest(mac_length=len(panel_mac)):
+                body = protocol.tlv(0x0004, panel_mac)
+                body += protocol.tlv(0x0075, total_mac)
+                body += protocol.tlv(0x0030, b"r1100")
+                body += protocol.tlv(0x000A, bytes((44, 0x1A, 0x01, 63, 0)))
+                body += protocol.tlv(0x000B, b"\x01")
+
+                self.assertIsNone(
+                    protocol.decode_thermostat_status(body, total_mac)
+                )
+
     def test_placeholder_measurements_preserve_the_last_valid_values(self) -> None:
         total_mac = bytes.fromhex("ff00ffffffff00ff")
         panel_mac = bytes.fromhex("ff00ffffffff01ff")

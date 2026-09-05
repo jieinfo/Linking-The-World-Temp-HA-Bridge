@@ -504,6 +504,73 @@ async def test_fake_controller_handles_fragmented_malformed_and_status_frames(
     ] == [(1, 1), (2, 4)]
 
 
+async def test_runtime_status_stream_does_not_accumulate_in_login_queue(
+    socket_enabled,
+):
+    """Thousands of runtime pushes are callback-only after authentication."""
+    received = 0
+    fake_controller = FakeMC7021Server()
+    await fake_controller.async_start()
+    client = AsyncMoorgenClient(
+        fake_controller.host,
+        fake_controller.port,
+        "admin",
+        "secret",
+    )
+
+    async def record_status(_body: bytes) -> None:
+        nonlocal received
+        received += 1
+
+    client.on_status = record_status
+    try:
+        await client.connect()
+        received = 0
+        frames = tuple(
+            YasHcpFrame(5, 0x0C, sequence, b"status")
+            for sequence in range(3_000)
+        )
+        await fake_controller.async_send_frames(*frames)
+        await _wait_for(lambda: received == len(frames), timeout=3)
+
+        assert client._inbox.qsize() == 0
+    finally:
+        await client.close()
+        await fake_controller.async_stop()
+
+
+async def test_invalid_panel_mac_does_not_break_status_stream(
+    hass, setup_integration, fake_controller
+):
+    """A malformed panel identity is ignored without rebuilding the session."""
+    hub = setup_integration.hub
+    client = hub._client
+    assert client is not None
+    ignored_before = hub.health.snapshot()["counters"]["ignored_statuses"]
+    invalid = (
+        tlv(0x0004, b"\x01")
+        + tlv(0x0075, hub.tech_system_mac)
+        + tlv(0x0030, b"r1100")
+        + tlv(0x000A, bytes((44, 0x1A, 0x01, 63, 0)))
+        + tlv(0x000B, b"\x01")
+    )
+
+    await fake_controller.async_send_status(invalid)
+    await _wait_for(
+        lambda: hub.health.snapshot()["counters"]["ignored_statuses"]
+        >= ignored_before + 1
+    )
+    assert client.reader_alive
+    assert client.reader_error is None
+
+    mac_hex = "ff00ffffffff01ff"
+    await fake_controller.async_send_status(_thermostat_status(hub, mac_hex))
+    await _wait_for(lambda: mac_hex in hub.thermostats)
+    await hass.async_block_till_done()
+
+    assert hub.thermostats[mac_hex].current_temperature == 24.6
+
+
 async def test_fake_controller_delays_a_configured_stage_response(socket_enabled):
     """Hold a hello reply until the configured server-side delay expires."""
     fake_controller = FakeMC7021Server(
