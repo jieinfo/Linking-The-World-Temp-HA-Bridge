@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from time import monotonic
 import unittest
+from time import monotonic
 
 import pytest
 import voluptuous as vol
 from homeassistant.helpers import config_validation as cv
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.linking_the_world_temp_ha.config_flow import (
     _connection_schema,
     _normalize_connection_data,
+    _validate_host,
 )
 from custom_components.linking_the_world_temp_ha.const import DOMAIN
 from custom_components.linking_the_world_temp_ha.protocol import (
@@ -55,6 +57,8 @@ class ConfigFlowTest(unittest.TestCase):
         self.assertEqual(normalized["host"], "192.168.10.246")
         self.assertEqual(normalized["client_id"], "ff9549d5891998e5")
         self.assertEqual(normalized["tech_system_mac"], "ff00ffffffff00ff")
+        self.assertEqual(_validate_host("MC7021.LOCAL."), "mc7021.local")
+        self.assertEqual(_validate_host("2001:0DB8::1"), "2001:db8::1")
 
     def test_invalid_connection_data_is_rejected(self) -> None:
         """Submitted connection values still receive strict validation."""
@@ -313,6 +317,35 @@ async def test_user_flow_creates_a_normalized_entry_after_a_real_handshake(
     assert result["data"]["tech_system_mac"] == "ff00ffffffff00ff"
 
 
+async def test_user_flow_rejects_normalized_duplicate_before_connecting(
+    hass, monkeypatch
+) -> None:
+    """Equivalent address spelling must abort without logging in again."""
+    import custom_components.linking_the_world_temp_ha.config_flow as config_flow
+
+    existing = MockConfigEntry(
+        domain=DOMAIN,
+        data=_connection_data("mc7021.local"),
+        unique_id="mc7021.local:9000",
+    )
+    existing.add_to_hass(hass)
+
+    async def unexpected_validation(_data) -> None:
+        pytest.fail("a duplicate controller must be rejected before network validation")
+
+    monkeypatch.setattr(
+        config_flow, "_async_validate_connection", unexpected_validation
+    )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "user"},
+        data=_connection_data("  MC7021.LOCAL  "),
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "already_configured"
+
+
 async def test_reconfigure_updates_the_same_entry_and_rejects_duplicate_target(
     hass, mock_config_entry, monkeypatch
 ) -> None:
@@ -354,6 +387,39 @@ async def test_reconfigure_updates_the_same_entry_and_rejects_duplicate_target(
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input=_connection_data("10.0.0.4")
     )
+    assert result["type"] == "abort"
+    assert result["reason"] == "already_configured"
+
+
+async def test_reconfigure_rejects_normalized_duplicate_before_connecting(
+    hass, mock_config_entry, monkeypatch
+) -> None:
+    """Reconfigure cannot contact an address already owned by another entry."""
+    import custom_components.linking_the_world_temp_ha.config_flow as config_flow
+
+    mock_config_entry.add_to_hass(hass)
+    duplicate = MockConfigEntry(
+        domain=DOMAIN,
+        data=_connection_data("controller.local"),
+        unique_id="controller.local:9000",
+    )
+    duplicate.add_to_hass(hass)
+
+    async def unexpected_validation(_data) -> None:
+        pytest.fail("duplicate reconfiguration must abort before connecting")
+
+    monkeypatch.setattr(
+        config_flow, "_async_validate_connection", unexpected_validation
+    )
+    flow = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": mock_config_entry.entry_id},
+        data=None,
+    )
+    result = await hass.config_entries.flow.async_configure(
+        flow["flow_id"], user_input=_connection_data("CONTROLLER.LOCAL")
+    )
+
     assert result["type"] == "abort"
     assert result["reason"] == "already_configured"
 

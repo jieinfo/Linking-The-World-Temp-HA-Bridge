@@ -138,4 +138,4 @@ def _command_state(status: object) -> str:
 
 def _protocol_status(status: object) -> str:
     """Return the small supported protocol-status vocabulary only."""
-    return status if status in _PROTOCOL_STATUSES else "unknown"
+    return status if isinstance(status, str) and status in _PROTOCOL_STATUSES else "unknown"

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from math import isfinite
-import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
@@ -17,6 +17,17 @@ from .const import DOMAIN
 PANEL_STORE_VERSION = 2
 STALE_PANEL_SECONDS = 30 * 24 * 60 * 60
 SAVE_DELAY_SECONDS = 1
+
+
+def _panel_store_key(entry_id: str) -> str:
+    return f"{DOMAIN}.{entry_id}.panels"
+
+
+async def async_remove_panel_storage(hass: HomeAssistant, entry_id: str) -> None:
+    """Delete panel history only when its config entry is permanently removed."""
+    await Store[dict[str, Any]](
+        hass, PANEL_STORE_VERSION, _panel_store_key(entry_id)
+    ).async_remove()
 
 
 @dataclass(slots=True)
@@ -115,7 +126,7 @@ class PanelRegistry:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._monotonic_clock = monotonic_clock or time.monotonic
         self._status_gap_timeout = status_gap_timeout
-        self._store = _PanelStore(hass, f"{DOMAIN}.{entry_id}.panels", self._clock)
+        self._store = _PanelStore(hass, _panel_store_key(entry_id), self._clock)
         self.records: dict[str, PanelRecord] = {}
         self.room_names: dict[str, str] = {}
         self._monitoring_active = False

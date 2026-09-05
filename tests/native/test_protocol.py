@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import random
 import struct
 import sys
 import types
@@ -381,6 +382,17 @@ class StatusTests(unittest.TestCase):
         for value in ("", "0011", "not-a-mac"):
             with self.assertRaises(ValueError):
                 protocol.parse_device_mac(value)
+
+    def test_generated_malformed_status_fields_never_escape_decoders(self) -> None:
+        """Deterministic damaged field bodies remain isolated from the session loop."""
+        randomizer = random.Random(0x7021)
+        total_mac = bytes.fromhex("ff00ffffffff00ff")
+
+        for _ in range(1_000):
+            body = randomizer.randbytes(randomizer.randrange(65))
+            with self.subTest(length=len(body)):
+                protocol.decode_tech_system_status(body, total_mac)
+                protocol.decode_thermostat_status(body, total_mac)
 
 
 class ClientEdgeTests(unittest.IsolatedAsyncioTestCase):

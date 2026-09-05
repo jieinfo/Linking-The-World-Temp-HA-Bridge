@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import time
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from homeassistant.components import climate, select, switch
@@ -15,11 +15,11 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 import custom_components.linking_the_world_temp_ha.hub as hub_module
+from custom_components.linking_the_world_temp_ha.command_queue import QueuedCommand
 from custom_components.linking_the_world_temp_ha.const import DOMAIN
 from custom_components.linking_the_world_temp_ha.entity import LinkingThermostatEntity
 from custom_components.linking_the_world_temp_ha.health import HealthTracker
 from custom_components.linking_the_world_temp_ha.hub import LinkingTempHub
-from custom_components.linking_the_world_temp_ha.command_queue import QueuedCommand
 from custom_components.linking_the_world_temp_ha.panel_registry import PanelRegistry
 from custom_components.linking_the_world_temp_ha.protocol import (
     ThermostatState,
@@ -32,6 +32,8 @@ from custom_components.linking_the_world_temp_ha.select import SystemModeSelect
 from custom_components.linking_the_world_temp_ha.switch import (
     SystemPowerSwitch,
     WinterHumidifierSwitch,
+)
+from custom_components.linking_the_world_temp_ha.switch import (
     async_setup_entry as async_setup_switches,
 )
 
@@ -1039,6 +1041,39 @@ async def test_failed_mode_confirmation_leaves_the_system_safely_off(
 
 
 @pytest.mark.usefixtures("enable_custom_integrations")
+async def test_unload_during_mode_transition_stops_without_later_commands(
+    hass, setup_integration, mock_config_entry, fake_controller
+) -> None:
+    """An unload ends a waiting mode transaction before mode or restore writes."""
+    hub = setup_integration.hub
+    hub.command_min_interval = 0
+    commands: list[tuple[int, int | None]] = []
+    first_command = asyncio.Event()
+
+    async def record_without_confirmation(frame) -> None:
+        fields = parse_tlvs(frame.body)
+        if fields.get(0x0004) != hub.tech_system_mac:
+            return
+        value = fields.get(0x000A)
+        commands.append((fields[0x0009][0], value[0] if value else None))
+        first_command.set()
+
+    fake_controller.on_command = record_without_confirmation
+    await fake_controller.async_send_status(_system_status(hub, power=True, mode=1))
+    await _wait_for(lambda: hub.available and hub.state.power == "ON")
+    transition = asyncio.create_task(hub.async_select_mode("heat"))
+    await asyncio.wait_for(first_command.wait(), timeout=1)
+
+    assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    with pytest.raises(HomeAssistantError, match="连接已经断开"):
+        await asyncio.wait_for(transition, timeout=1)
+
+    assert commands == [(1, None)]
+    assert not hub._pending
+    assert not hub._queued
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
 async def test_dynamic_climate_and_filtered_sensors_follow_app_pushes(
     hass, setup_integration, fake_controller
 ):
@@ -1272,7 +1307,6 @@ async def test_thermostat_timeout_retries_once_and_accepts_the_late_ack(
         {"entity_id": climate_entity, ATTR_TEMPERATURE: 22},
         blocking=True,
     )
-    target = f"thermostat_{mac_hex}"
     await _wait_for(
         lambda: not hub._pending
         and hub.thermostats[mac_hex].target_temperature == 22,

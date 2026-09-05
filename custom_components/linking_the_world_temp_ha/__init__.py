@@ -11,6 +11,7 @@ from homeassistant.helpers import entity_registry as er
 from .const import DOMAIN, PLATFORMS
 from .health import HealthTracker
 from .hub import LinkingTempHub
+from .panel_registry import async_remove_panel_storage
 from .repairs import async_delete_entry_issues
 from .runtime import LinkingTempConfigEntry, LinkingTempRuntime
 
@@ -94,8 +95,9 @@ async def async_unload_entry(
 async def async_remove_entry(
     hass: HomeAssistant, entry: LinkingTempConfigEntry
 ) -> None:
-    """Clean up Repairs that otherwise outlive a removed config entry."""
+    """Clean up private state that otherwise outlives a removed config entry."""
     async_delete_entry_issues(hass, entry.entry_id)
+    await async_remove_panel_storage(hass, entry.entry_id)
 
 
 async def _async_reload_entry(

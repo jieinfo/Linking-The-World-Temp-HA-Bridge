@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import re
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OLD_REPOSITORY_URL = "https://github.com/jieinfo/" + (
@@ -45,9 +44,19 @@ class RepositorySurfaceTests(unittest.TestCase):
 
         self.assertIn("tags: ['v*']", workflow)
         self.assertIn("scripts/release_metadata.py --tag", workflow)
-        self.assertIn("'0.13.363'", workflow)
+        self.assertIn("pytest-homeassistant-custom-component==0.13.363", workflow)
         self.assertNotIn("'0.13.354'", workflow)
         self.assertNotIn("docker build", workflow)
+
+    def test_ci_checks_quality_and_minimum_plus_latest_home_assistant(self) -> None:
+        """CI must catch static defects and future stable HA compatibility changes."""
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        self.assertIn("ruff check", workflow)
+        self.assertIn("mypy custom_components/linking_the_world_temp_ha", workflow)
+        self.assertIn("name: minimum", workflow)
+        self.assertIn("name: latest", workflow)
+        self.assertIn("pytest-homeassistant-custom-component==0.13.363", workflow)
 
     def test_public_repository_urls_use_integration_name(self) -> None:
         """Every maintained public link must use the renamed repository."""

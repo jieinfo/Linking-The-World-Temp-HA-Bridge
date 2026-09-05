@@ -6,11 +6,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import custom_components.linking_the_world_temp_ha.panel_registry as registry_module
 from custom_components.linking_the_world_temp_ha.panel_registry import (
     STALE_PANEL_SECONDS,
     PanelRegistry,
 )
-import custom_components.linking_the_world_temp_ha.panel_registry as registry_module
 
 
 def utc(value: str) -> datetime:

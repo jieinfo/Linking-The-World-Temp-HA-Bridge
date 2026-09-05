@@ -52,11 +52,11 @@ def _validate_host(host: str) -> str:
     if not host:
         raise vol.Invalid("host is empty")
     try:
-        ipaddress.ip_address(host)
+        return ipaddress.ip_address(host).compressed
     except ValueError:
         if any(char.isspace() for char in host) or "." not in host:
             raise vol.Invalid("invalid host")
-    return host
+    return host.rstrip(".").lower()
 
 
 def _validate_client_id(value: str) -> str:
@@ -156,10 +156,31 @@ def _reauth_schema(
     )
 
 
-class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class LinkingTempConfigFlow(  # type: ignore[call-arg]
+    config_entries.ConfigFlow, domain=DOMAIN
+):
     """Handle native integration setup."""
 
     VERSION = 1
+
+    @callback
+    def _connection_entry(
+        self, data: Mapping[str, Any], *, exclude_entry_id: str | None = None
+    ) -> config_entries.ConfigEntry | None:
+        """Find an entry already using the same normalized network endpoint."""
+        host = data[CONF_HOST]
+        port = data[CONF_PORT]
+        for entry in self._async_current_entries():
+            if entry.entry_id == exclude_entry_id:
+                continue
+            try:
+                entry_host = _validate_host(str(entry.data[CONF_HOST]))
+                entry_port = int(entry.data[CONF_PORT])
+            except (KeyError, TypeError, ValueError, vol.Invalid):
+                continue
+            if entry_host == host and entry_port == port:
+                return entry
+        return None
 
     @callback
     def _async_update_entry_and_abort(
@@ -187,6 +208,8 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 normalized = _normalize_connection_data(user_input)
+                if self._connection_entry(normalized) is not None:
+                    return self.async_abort(reason="already_configured")
                 await _async_validate_connection(normalized)
             except Exception as error:  # noqa: BLE001 - expected errors map below.
                 if (error_key := _connection_error_key(error)) is not None:
@@ -221,6 +244,13 @@ class LinkingTempConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 normalized = _normalize_connection_data(user_input)
+                if (
+                    self._connection_entry(
+                        normalized, exclude_entry_id=entry.entry_id
+                    )
+                    is not None
+                ):
+                    return self.async_abort(reason="already_configured")
                 await _async_validate_connection(normalized)
             except Exception as error:  # noqa: BLE001 - expected errors map below.
                 if (error_key := _connection_error_key(error)) is not None:
